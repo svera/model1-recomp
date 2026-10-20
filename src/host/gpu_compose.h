@@ -5,6 +5,7 @@
 // source pixel whole or leaves it out (KEY's top byte: 0xff) make the target the CPU's picture.
 #pragma once
 #include "../machine/model1.h"
+#include "../gpu/gpu3d_shaders.h"
 #include <SDL3/SDL.h>
 #include <cstdlib>
 #include <algorithm>
@@ -28,11 +29,46 @@ public:
 											 SDL_BLENDFACTOR_ZERO, SDL_BLENDFACTOR_ONE, SDL_BLENDOPERATION_ADD);
 		return true;
 	}
+	// Low antialiasing's edge pass on the GPU (src/gpu/edge_aa.hlsl): SDL's gpu renderer only, with
+	// a custom render state (a fragment shader, the 3D's own picture as its second texture, by
+	// which it tells the 3D's pixels). False: not here (the CPU smooths, model1::edge_smooth).
+	bool init_edge()
+	{
+		const char *name = SDL_GetRendererName(m_ren);
+		if (getenv("M1_CPU_EDGE") || !name || strcmp(name, "gpu")) return false;
+		m_dev = static_cast<SDL_GPUDevice *>(SDL_GetPointerProperty(SDL_GetRendererProperties(m_ren), SDL_PROP_RENDERER_GPU_DEVICE_POINTER, nullptr));
+		if (!m_dev) return false;
+		SDL_GPUShaderCreateInfo si{};
+		const SDL_GPUShaderFormat f = SDL_GetGPUShaderFormats(m_dev);
+		if (f & SDL_GPU_SHADERFORMAT_DXIL) { si.format = SDL_GPU_SHADERFORMAT_DXIL; si.code = gpu3d_edge_aa_dxil; si.code_size = sizeof gpu3d_edge_aa_dxil; }
+		else if (f & SDL_GPU_SHADERFORMAT_SPIRV) { si.format = SDL_GPU_SHADERFORMAT_SPIRV; si.code = gpu3d_edge_aa_spv; si.code_size = sizeof gpu3d_edge_aa_spv; }
+		else return false;
+		si.entrypoint = "main";
+		si.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+		si.num_samplers = 2;
+		m_edge_shader = SDL_CreateGPUShader(m_dev, &si);
+		if (!m_edge_shader) return false;
+		SDL_GPUSamplerCreateInfo ci{};
+		ci.min_filter = ci.mag_filter = SDL_GPU_FILTER_NEAREST;
+		ci.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+		ci.address_mode_u = ci.address_mode_v = ci.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+		m_edge_sampler = SDL_CreateGPUSampler(m_dev, &ci);
+		if (!m_edge_sampler) { SDL_ReleaseGPUShader(m_dev, m_edge_shader); m_edge_shader = nullptr; return false; }
+		return true;
+	}
+	bool edge_ready() const { return m_edge_shader != nullptr; }
 	// a new picture size or renderer state: everything made again
 	void reset()
 	{
 		if (m_target) SDL_DestroyTexture(m_target);
 		m_target = nullptr;
+		if (m_below) SDL_DestroyTexture(m_below);
+		m_below = nullptr;
+		if (m_small) SDL_DestroyTexture(m_small);
+		if (m_mid) SDL_DestroyTexture(m_mid);
+		m_small = m_mid = nullptr;
+		m_sw = m_sh = m_mw = m_mh = 0;
+		drop_edge_states();
 		for (auto &t : m_tex) { if (t.tex) SDL_DestroyTexture(t.tex); t = {}; }
 		if (m_pre.tex) SDL_DestroyTexture(m_pre.tex);
 		m_pre = {};
@@ -65,8 +101,55 @@ public:
 		uploaded += uint64_t(im.w) * n;
 		m_pre.rows += n;
 	}
-	~gpu_compose() { reset(); }
+	// everything on the renderer's device let go, before the renderer is (after it, SDL's
+	// release locks a mutex of the destroyed device: the game hung on quitting)
+	void release()
+	{
+		reset();
+		if (m_edge_sampler) SDL_ReleaseGPUSampler(m_dev, m_edge_sampler);
+		if (m_edge_shader) SDL_ReleaseGPUShader(m_dev, m_edge_shader);
+		m_edge_sampler = nullptr;
+		m_edge_shader = nullptr;
+	}
+	~gpu_compose() { release(); }
 	SDL_Texture *target() const { return m_target; }
+	// Antialiasing on the GPU: the target, drawn k times the shown size each way, averaged down to
+	// it (w x h): 2x a linear draw at half the size (each pixel the middle of a 2 x 2 block: their
+	// average); 3x through twice the shown size first (3 to 2, linear: neighbours blended) then
+	// halved the same way. The picture then never comes back to the CPU (it was put together and
+	// averaged there with antialiasing on: a 4x picture's 30 million pixels a frame on one core)
+	bool resolve(int k, int w, int h)
+	{
+		if (!m_target || k < 2) return false;
+		auto fit = [&](SDL_Texture *&t, int &tw, int &th, int nw, int nh) {
+			if (t && tw == nw && th == nh) return true;
+			if (t) SDL_DestroyTexture(t);
+			t = SDL_CreateTexture(m_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, nw, nh);
+			if (!t) return false;
+			made++;
+			SDL_SetTextureBlendMode(t, SDL_BLENDMODE_NONE);
+			SDL_SetTextureScaleMode(t, SDL_SCALEMODE_LINEAR);
+			tw = nw; th = nh;
+			return true;
+		};
+		if (!fit(m_small, m_sw, m_sh, w, h)) return false;
+		if (k == 3 && !fit(m_mid, m_mw, m_mh, 2 * w, 2 * h)) return false;
+		SDL_Texture *before = SDL_GetRenderTarget(m_ren);
+		SDL_ScaleMode was = SDL_SCALEMODE_NEAREST;
+		SDL_GetTextureScaleMode(m_target, &was);
+		SDL_SetTextureScaleMode(m_target, SDL_SCALEMODE_LINEAR);
+		bool ok = true;
+		SDL_Texture *from = m_target;
+		if (k == 3) {
+			ok = SDL_SetRenderTarget(m_ren, m_mid) && SDL_RenderTexture(m_ren, m_target, nullptr, nullptr);
+			from = m_mid;
+		}
+		ok = ok && SDL_SetRenderTarget(m_ren, m_small) && SDL_RenderTexture(m_ren, from, nullptr, nullptr);
+		SDL_SetTextureScaleMode(m_target, was);
+		SDL_SetRenderTarget(m_ren, before);
+		return ok;
+	}
+	SDL_Texture *resolved() const { return m_small; }
 	// The 3D's own textures on the renderer's device (gpu3d::draw_target's, wrapped by the host): a
 	// picture with d3_target >= 0 takes its 3D from one of them, nothing uploaded. (The host's: not
 	// destroyed here.)
@@ -139,9 +222,32 @@ public:
 			}
 		}
 		SDL_Texture *before = SDL_GetRenderTarget(m_ren);
-		if (!SDL_SetRenderTarget(m_ren, m_target)) return false;
-		bool clipped = false;
+		// Low's edges smoothed here: the parts up to the 3D put together on a texture of their own,
+		// drawn onto the target through the edge pass, the rest (the sides, the 2D above) over that
+		const bool edge = p.d3_edge && p.d3_target >= 0 && p.d3_target < model1::G3_TARGETS && m_edge_shader;
+		SDL_GPURenderState *edge_state = nullptr;
+		if (edge) {
+			if (!m_below || m_bw != w || m_bh != h) {
+				if (m_below) SDL_DestroyTexture(m_below);
+				m_below = SDL_CreateTexture(m_ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, w, h);
+				made++;
+				if (!m_below) return false;
+				SDL_SetTextureBlendMode(m_below, SDL_BLENDMODE_NONE);
+				SDL_SetTextureScaleMode(m_below, SDL_SCALEMODE_NEAREST);
+				m_bw = w; m_bh = h;
+			}
+			edge_state = edge_state_for(p.d3_target);
+			if (!edge_state) return SDL_SetError("the edge pass's render state: %s", SDL_GetError());
+		}
+		if (!SDL_SetRenderTarget(m_ren, edge ? m_below : m_target)) return false;
+		bool clipped = false, below = edge;
 		for (const model1::gpu_op &o : p.ops) {
+			if (below && o.tex != model1::TEX_3D && m_after_3d) {   // (the 3D's on: its edges, then the rest)
+				if (clipped) { SDL_SetRenderClipRect(m_ren, nullptr); clipped = false; }
+				if (!edge_pass(edge_state)) { SDL_SetRenderTarget(m_ren, before); return false; }
+				below = false;
+			}
+			m_after_3d = false;
 			const bool clip = o.clip_x0 > 0 || o.clip_x1 < w;
 			if (clip) {
 				const SDL_Rect c{ o.clip_x0, 0, o.clip_x1 - o.clip_x0, h };
@@ -159,12 +265,15 @@ public:
 				SDL_Texture *t = p.d3_target < model1::G3_TARGETS ? m_ext3d[p.d3_target] : nullptr;
 				if (!t) { if (clipped) SDL_SetRenderClipRect(m_ren, nullptr); SDL_SetRenderTarget(m_ren, before); return SDL_SetError("no texture for the GPU's 3D"); }
 				SDL_RenderTexture(m_ren, t, &s, &d);
+				m_after_3d = true;
 			} else if (m_tex[o.tex].tex) {
 				const SDL_FRect s{ o.sx, o.sy, o.sw, o.sh };
 				SDL_RenderTexture(m_ren, m_tex[o.tex].tex, &s, &d);
 			}
 		}
 		if (clipped) SDL_SetRenderClipRect(m_ren, nullptr);
+		if (below && !edge_pass(edge_state)) { SDL_SetRenderTarget(m_ren, before); return false; }   // (the 3D last)
+		m_after_3d = false;
 		SDL_SetRenderTarget(m_ren, before);
 		return true;
 	}
@@ -273,8 +382,51 @@ private:
 	struct pre_part { SDL_Texture *tex = nullptr; int w = 0, h = 0, rows = 0; uint64_t gen = ~0ull; } m_pre;
 	SDL_Renderer *m_ren = nullptr;
 	SDL_Texture *m_target = nullptr;
+	SDL_Texture *m_small = nullptr, *m_mid = nullptr;   // (resolve's: the shown size, and twice it for 3x)
+	int m_sw = 0, m_sh = 0, m_mw = 0, m_mh = 0;
 	SDL_Texture *m_ext3d[model1::G3_TARGETS] = {};
 	int m_tw = 0, m_th = 0, m_max = 0;
 	part m_tex[model1::TEX_COUNT];
 	SDL_BlendMode m_keyed = SDL_BLENDMODE_NONE;
+	// Low's edge pass (init_edge): its shader and sampler, the picture beneath and with the 3D
+	// (m_below), and a render state for each of the 3D's textures (made as they're first used)
+	SDL_GPUDevice *m_dev = nullptr;
+	SDL_GPUShader *m_edge_shader = nullptr;
+	SDL_GPUSampler *m_edge_sampler = nullptr;
+	SDL_Texture *m_below = nullptr;
+	int m_bw = 0, m_bh = 0;
+	bool m_after_3d = false;   // (the last part drawn was the 3D)
+	SDL_GPURenderState *m_edge_state[model1::G3_TARGETS] = {};
+	SDL_Texture *m_edge_for[model1::G3_TARGETS] = {};
+	SDL_GPURenderState *edge_state_for(int i)
+	{
+		if (m_edge_state[i] && m_edge_for[i] == m_ext3d[i]) return m_edge_state[i];
+		if (m_edge_state[i]) { SDL_DestroyGPURenderState(m_edge_state[i]); m_edge_state[i] = nullptr; }
+		if (!m_ext3d[i]) return nullptr;
+		SDL_GPUTexture *t = static_cast<SDL_GPUTexture *>(SDL_GetPointerProperty(SDL_GetTextureProperties(m_ext3d[i]), SDL_PROP_TEXTURE_GPU_TEXTURE_POINTER, nullptr));
+		if (!t) return nullptr;
+		SDL_GPUTextureSamplerBinding b{ t, m_edge_sampler };
+		SDL_GPURenderStateCreateInfo ci{};
+		ci.fragment_shader = m_edge_shader;
+		ci.num_sampler_bindings = 1;
+		ci.sampler_bindings = &b;
+		m_edge_state[i] = SDL_CreateGPURenderState(m_ren, &ci);
+		m_edge_for[i] = m_ext3d[i];
+		return m_edge_state[i];
+	}
+	void drop_edge_states()
+	{
+		for (int i = 0; i < model1::G3_TARGETS; i++) {
+			if (m_edge_state[i]) SDL_DestroyGPURenderState(m_edge_state[i]);
+			m_edge_state[i] = nullptr; m_edge_for[i] = nullptr;
+		}
+	}
+	// the picture so far (m_below) onto the target through the edge pass
+	bool edge_pass(SDL_GPURenderState *st)
+	{
+		if (!SDL_SetRenderTarget(m_ren, m_target) || !SDL_SetGPURenderState(m_ren, st)) return false;
+		const bool ok = SDL_RenderTexture(m_ren, m_below, nullptr, nullptr);
+		SDL_SetGPURenderState(m_ren, nullptr);
+		return ok;
+	}
 };

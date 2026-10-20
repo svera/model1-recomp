@@ -12,7 +12,7 @@ namespace {
 const registration REGISTERED{ {
 	&PROFILE, &IO_PROFILE, &VIDEO,
 	nullptr,
-	[](model1 &) { return create_gameplay(); },
+	create_gameplay,
 	make_auto_play,
 	nullptr,
 } };

@@ -16,9 +16,9 @@ $(BIN)/vr_profile_test: $(OBJ)/tests/games/vr/profile_test.o $(GAMES_LINK)
 test-vr-profile: $(BIN)/vr_profile_test
 	$(BIN)/vr_profile_test
 
-$(BIN)/vr_gameplay_test: tests/games/vr/gameplay_test.cpp src/games/vr/gameplay.cpp
+$(BIN)/vr_gameplay_test: $(OBJ)/tests/games/vr/gameplay_test.o $(GAMES_LINK) $(call objs,$(RT) $(NATIVE)) $(REC_NONE) $(SLJIT_OBJ) $(CORO_OBJ)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
 test-vr-gameplay: $(BIN)/vr_gameplay_test
 	$(BIN)/vr_gameplay_test
 

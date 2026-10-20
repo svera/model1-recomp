@@ -195,15 +195,16 @@ cbuffer k : register(b0, space2) { uint k_total; uint k_W; uint k_pad0; uint k_p
 void main(uint3 tid : SV_DispatchThreadID)
 {
 	const uint t = tid.x + tid.y * 65535u * 64u;
-	if (t >= k_total) return;
-	const span s = spans.Load<span>((t) * sizeof(span));
+	if (t / L >= k_total) return;
+	const int lane = int(t % L);
+	const span s = spans.Load<span>((t / L) * sizeof(span));
 	if (s.xa > s.xb) return;
 	const poly q = polys.Load<poly>((s.poly) * sizeof(poly));
 	if (!(q.flags & SHADOW)) return;
 	const bool mshadow = (q.flags & MODEL_SHADOW) != 0u;
 	const uint at = uint(s.y) * k_W;
 	uint was;
-	for (int x = s.xa; x <= s.xb; x++) {
+	for (int x = s.xa + lane; x <= s.xb; x += int(L)) {
 		const uint o = LD(owner, at + uint(x));
 		if (o > s.poly) continue;                 // a solid polygon (or line) drawn after it
 		const uint d = mshadow ? LD(depth, at + uint(x)) : 0u;

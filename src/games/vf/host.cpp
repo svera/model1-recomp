@@ -9,6 +9,7 @@
 #include <array>
 #include <iterator>
 #include <optional>
+#include <cctype>
 
 namespace game::vf {
 namespace {
@@ -36,7 +37,24 @@ public:
 		num("infinite_energy", infinite_energy, 0, 3);
 		flag("one_hit_ko", one_hit_ko);
 		flag("no_time_limit", no_time_limit);
+		flag("kage_unmasked", kage_unmasked);
+		flag("english_set", english_set);
 		num("ring_cheat", ring_cheat, 0, 2);
+		num("random_fighter", random_fighter, 0, 2);
+		flag("random_opponents", random_cpu);
+		auto trimmed = [](std::string v) { while (!v.empty() && isspace(uint8_t(v.back()))) v.pop_back(); return v; };
+		for (int p = 0; p < 2; p++)
+			if (auto it = kv.find(p ? "random_p2_name" : "random_p1_name"); it != kv.end()) random_named[p] = trimmed(it->second);
+		for (int p = 0; p < 2; p++)
+			if (auto it = kv.find(p ? "random_p2" : "random_p1"); it != kv.end()) random_player[p] = trimmed(it->second);
+			else if (random_fighter) random_player[p] = "*";
+		if (auto it = kv.find("random_name"); it != kv.end() && random_fighter && kv.find("random_p1") == kv.end())
+			random_player[0] = random_player[1] = trimmed(it->second);
+		for (int p = 0; p < 2; p++)
+			if (random_named[p].empty() && !random_player[p].empty() && random_player[p] != "*" && random_player[p][0] != '#') random_named[p] = random_player[p];
+		if (akira_slot > 0 && random_player[0].empty() && kv.find("random_p1") == kv.end()) random_player[0] = "#" + std::to_string(akira_slot);
+		akira_slot = 0;
+		random_now();
 	}
 
 	void save_settings(FILE *f) const override
@@ -44,9 +62,16 @@ public:
 		fprintf(f, "ring_size = %d\n", ring);
 		if (arcade_coin >= 0) fprintf(f, "arcade_coins = %d\n", arcade_coin);
 		if (akira_slot) fprintf(f, "akira_slot = %d\n", akira_slot);
+		for (int p = 0; p < 2; p++) {
+			if (!random_player[p].empty()) fprintf(f, "random_p%d = %s\n", p + 1, random_player[p].c_str());
+			if (!random_named[p].empty()) fprintf(f, "random_p%d_name = %s\n", p + 1, random_named[p].c_str());
+		}
+		if (random_cpu) fprintf(f, "random_opponents = 1\n");
 		if (infinite_energy) fprintf(f, "infinite_energy = %d\n", infinite_energy);
 		if (one_hit_ko) fprintf(f, "one_hit_ko = 1\n");
 		if (no_time_limit) fprintf(f, "no_time_limit = 1\n");
+		if (kage_unmasked) fprintf(f, "kage_unmasked = 1\n");
+		if (english_set) fprintf(f, "english_set = 1\n");
 		if (ring_cheat) fprintf(f, "ring_cheat = %d\n", ring_cheat);
 	}
 
@@ -55,6 +80,36 @@ public:
 		ctx = &c;
 		vf.emplace(c.machine);
 		vf->set_no_time_limit(no_time_limit);   // (Cheats: an instruction of the game's, so before it's recompiled)
+		vf->set_strands_moved(random_fighter > 0);
+	}
+
+	const char *save_sidecar_name() const override { return "ranking_names.txt"; }
+	std::string save_sidecar() const override { return vf->ranking_names(); }
+	void load_sidecar(const std::string &text) override { vf->set_ranking_names(text); }
+	uint32_t save_sidecar_version() const override { return vf->ranking_names_version(); }
+	bool hide_frame() const override { return vf->random_select_hidden(); }
+
+	void apply_players()
+	{
+		for (int p = 0; p < 2; p++)
+			if (!vf->set_random_player(p, random_fighter ? random_player[p] : std::string())) {
+				if (random_named[p] == random_player[p]) random_named[p].clear();
+				random_player[p] = "*";
+				vf->set_random_player(p, "*");
+				changed();
+			}
+	}
+
+	bool before_restart() override
+	{
+		settings_before.reset();
+		apply_players();
+		bool code = vf->set_no_time_limit(no_time_limit);
+		code |= vf->set_strands_moved(random_fighter > 0);
+		vf->set_random_fighter(random_fighter > 0, random_fighter > 0, random_cpu);
+		vf->set_akira_slot(0);
+		load_secret_icon(*vf, 0, icon_dirs());
+		return code;
 	}
 
 	void before_boot() override
@@ -62,8 +117,8 @@ public:
 		load_screens(*vf, ctx->assets_dir + "/games/vf/backgrounds");   // the title and select's widescreen sides
 		load_screens(*vf, ctx->data_dir + "/backgrounds");     // the player's own, which win
 		vf->set_ring_width(ring_now());
-		vf->set_akira_slot(akira_slot);
-		load_secret_icon(*vf, akira_slot, icon_dirs());
+		vf->set_kage_unmasked(kage_unmasked);
+		before_restart();
 	}
 
 	// The play style's coins: PC mode is free play (its FREE PLAY text hidden); Arcade mode has the
@@ -73,14 +128,20 @@ public:
 	bool booted() override
 	{
 		settings_before.reset();   // (a restart applies them)
+		bool language = false;
+		if (!english_set && vf->assignment_value(gameplay::assignment::language) >= 0) {
+			english_set = true;
+			changed();
+			language = vf->set_assignment(gameplay::assignment::language, 1);
+		}
 		const int now = vf->coin_setting();
-		if (now < 0) return false;                       // (the game's very first boot writes them)
+		if (now < 0) return language;                       // (the game's very first boot writes them)
 		if (ctx->pc_mode) {
 			if (now != gameplay::FREE_PLAY && now != arcade_coin) { arcade_coin = now; ctx->settings_changed(); }
-			return vf->force_free_play();
+			return vf->force_free_play() || language;
 		}
 		// Arcade: its own setting back; free play left by PC mode before one was kept: the game's first
-		return vf->set_coin_setting(arcade_coin >= 0 ? arcade_coin : now == gameplay::FREE_PLAY ? 0 : now);
+		return vf->set_coin_setting(arcade_coin >= 0 ? arcade_coin : now == gameplay::FREE_PLAY ? 0 : now) || language;
 	}
 
 	bool has_play_style() const override { return true; }
@@ -102,7 +163,7 @@ public:
 
 	std::vector<menu_item> menu_items_after_controls() override
 	{
-		return { { "Cheats", "Play as the characters left unused in the game. Changing it restarts the game.", {}, {},
+		return { { "Cheats", "Secret characters, random fighters, Kage's mask and fight switches. Some restart the game.", {}, {},
 				   [this] { ctx->push_page(cheats_page()); } } };
 	}
 
@@ -113,8 +174,7 @@ public:
 		const bool changed = *settings_before != settings_now();
 		settings_before.reset();
 		if (!changed) return restart::none;
-		// (the game's code is then new: recompiled before the reset, which leaves the old behind)
-		return vf->set_no_time_limit(no_time_limit) ? restart::game_and_code : restart::game;
+		return restart::game;
 	}
 
 	void before_frame() override
@@ -139,6 +199,10 @@ private:
 	int ring = 0;              // Arcade settings: the ring's width (0: by difficulty)
 	int arcade_coin = -1;      // Arcade mode's coin/credit setting, kept while PC mode makes it free play (-1: not seen yet)
 	int akira_slot = 0;        // Cheats: who plays in Akira's place (UNUSED_CHARACTERS; 0 Akira)
+	bool random_cpu = false, kage_unmasked = false, english_set = false;
+	int random_fighter = 0;
+	std::string random_player[2], random_named[2];
+	void random_now() { random_fighter = !random_player[0].empty() || !random_player[1].empty() || random_cpu; }
 	int infinite_energy = 0;   // Cheats: bit 0 player 1, bit 1 player 2
 	bool one_hit_ko = false, no_time_limit = false;   // Cheats
 	int ring_cheat = 0;        // Cheats: 0 the arcade's, 1 tiny (600), 2 huge (5000: no ring outs)
@@ -149,8 +213,8 @@ private:
 	// ---- the arcade's own settings (test mode's GAME ASSIGNMENTS): the game reads them as it starts,
 	// so closing the menu after changing one restarts it (only if something is different) ----
 	using ga = gameplay::assignment;
-	static constexpr int N_ASSIGN = 5;
-	using settings_values = std::array<int, N_ASSIGN + 4>;
+	static constexpr int N_ASSIGN = 6;
+	using settings_values = std::array<int, N_ASSIGN + 6>;
 	std::optional<settings_values> settings_before;   // as the Arcade settings or Cheats page opened
 	settings_values settings_now()
 	{
@@ -160,6 +224,8 @@ private:
 		v[N_ASSIGN + 1] = akira_slot;   // (Cheats: read as a fight loads, so it restarts too)
 		v[N_ASSIGN + 2] = ring_cheat;
 		v[N_ASSIGN + 3] = no_time_limit;   // (an instruction of the game's: a restart recompiles it)
+		v[N_ASSIGN + 4] = (random_fighter != 0) * 2 + random_cpu;
+		v[N_ASSIGN + 5] = int(std::hash<std::string>{}(random_player[0] + "/" + random_player[1]));
 		return v;
 	}
 	void changed() { ctx->settings_changed(); }
@@ -172,8 +238,15 @@ private:
 		auto choice = [&](const char *label, const char *help, ga a, std::function<std::string(int)> name) {
 			p.items.push_back({ label, help,
 				[g, a, name] { int v = g->assignment_value(a); return v < 0 ? std::string("-") : name(v); },
-				[g, a](int d) { int v = g->assignment_value(a); if (v >= 0) g->set_assignment(a, v + d); } });
+				[this, g, a](int d) {
+					int v = g->assignment_value(a);
+					if (v >= 0) g->set_assignment(a, v + d);
+					if (v >= 0 && a == ga::language && !english_set) { english_set = true; changed(); }
+				} });
 		};
+		static const char *LANGUAGES[] = { "Japanese", "English" };
+		choice("Language", "The game's own text, as the rules shown between demos: Japanese, as the arcade board comes set, or English.",
+			ga::language, [](int v) { return std::string(LANGUAGES[v]); });
 		static const char *DIFFICULTY[] = { "Easy", "Normal", "Hard", "Hardest" };
 		choice("Difficulty", "How hard the computer fights. Harder also gives both fighters less energy, and a smaller ring while Ring size is Default.",
 			ga::difficulty, [](int v) { return std::string(DIFFICULTY[v]); });
@@ -199,23 +272,131 @@ private:
 		return p;
 	}
 
-	// ---- cheats: the unused characters (in Akira's place) ----
+	// Each player's fighter's row state: typing a seed in it, what was typed, a mistake; and where the
+	// page put the rows (to rebuild it with the same one selected)
+	struct seed_entry { bool typing = false, pending = false; std::string typed, error; int secret = 1; };   // (pending: Seed chosen, none typed yet: plays as Random)
+	std::shared_ptr<seed_entry> seed_st[2] = { std::make_shared<seed_entry>(), std::make_shared<seed_entry>() };
+	int fighter_row[2] = { 0, 0 }, fighter_sub[2] = { -1, -1 };
+	// (out here: the rows' functions outlive the page's building)
+	int kind_of(int pl) const { const std::string &v = random_player[pl]; return v.empty() ? 0 : v == "*" ? 1 : v[0] == '#' ? 3 : 2; }
+	inline static const char *KINDS[] = { "Normal", "Random", "Seed", "Secret character" };
+	// (the page made first: where a player's rows land depends on the rows above)
+	void rebuild(int pl, bool sub) { menu_page pg = cheats_page(); ctx->replace_page(std::move(pg), sub && fighter_sub[pl] >= 0 ? fighter_sub[pl] : fighter_row[pl]); }
+	static constexpr int N_SECRET = int(std::size(UNUSED_CHARACTERS));
 	menu_page cheats_page()
 	{
 		if (!settings_before) settings_before = settings_now();
-		menu_page p{ "Cheats: a change restarts the game when the menu closes", "", {} };
-		constexpr int N_CHARS = int(std::size(UNUSED_CHARACTERS));
-		p.items.push_back({ "Secret character",
-			"A character cut from the game, in Akira's spot on the select screen (Akira is away while one is in). "
-			"Unfinished: borrowed moves, no throws. The Koskol brothers were to be the final bosses.",
-			[this] { return std::string(akira_slot ? UNUSED_CHARACTERS[akira_slot] : "Off"); },
-			[this](int d) {
-				akira_slot = wrap(akira_slot + d, N_CHARS);
+		menu_page p{ "Cheats: most changes restart the game when the menu closes", "", {} };
+		auto heading = [&p](const char *t) { menu_item h{ t, "", {}, {}, {}, true }; h.heading = true; p.items.push_back(h); };
+		heading("FIGHTERS");
+		// Each player's fighter (Normal, Random, Seed, Secret character), and under it, only when it
+		// needs one, a row of its own: the seed (typed right in it, a mistake said under it) or the
+		// secret character. Anything but Normal is picked for that player at the select
+		for (int pl = 0; pl < 2; pl++) {
+			auto st = seed_st[pl];
+			if (kind_of(pl) == 3) st->secret = std::clamp(atoi(random_player[pl].c_str() + 1), 1, N_SECRET - 1);
+			auto entry = std::make_shared<std::function<bool(const SDL_Event &)>>();
+			static const char *HINT = "Letters type   Backspace delete   Enter play it   Esc cancel   "
+									  "(a pad: Up / Down the letter, Right the next, Left delete, A play it, B cancel)";
+			auto set_kind = [this, pl](const std::string &v) { random_player[pl] = v; if (v != "" && v != "*" && v[0] != '#') random_named[pl] = v; random_now(); changed(); };
+			auto start_typing = [this, pl, st, entry] {
+				st->typing = true; st->typed.clear(); st->error.clear();
+				rebuild(pl, true);
+				ctx->capture(HINT, *entry, [this, pl, st] { st->typing = false; st->error.clear(); rebuild(pl, false); });
+			};
+			*entry = [this, pl, st, set_kind](const SDL_Event &e) {
+				bool enter = false;
+				if (e.type == SDL_EVENT_KEY_DOWN) {
+					const SDL_Scancode sc = e.key.scancode;
+					SDL_Keycode k = e.key.key;   // (the letter on the key, the keyboard's layout: AZERTY's A is the scancode's Q)
+					if (k == SDLK_UNKNOWN && sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) k = SDLK_A + (sc - SDL_SCANCODE_A);   // (none given: by its place)
+					if (k >= SDLK_A && k <= SDLK_Z) { if (st->typed.size() < 12) st->typed += char('A' + (k - SDLK_A)); }
+					else if (sc == SDL_SCANCODE_BACKSPACE) { if (!st->typed.empty()) st->typed.pop_back(); }
+					else if (sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_KP_ENTER) enter = true;
+					else return false;
+				} else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+					std::string &t = st->typed;
+					auto turn = [&](int d) { if (t.empty()) t.push_back('A'); else t.back() = char('A' + ((t.back() - 'A' + d) % 26 + 26) % 26); };
+					switch (e.gbutton.button) {
+					case SDL_GAMEPAD_BUTTON_EAST: st->typing = false; st->error.clear(); rebuild(pl, false); return true;   // (B: as it was)
+					case SDL_GAMEPAD_BUTTON_SOUTH: enter = true; break;
+					case SDL_GAMEPAD_BUTTON_DPAD_UP: turn(+1); break;
+					case SDL_GAMEPAD_BUTTON_DPAD_DOWN: turn(-1); break;
+					case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: if (t.size() < 12) t.push_back(t.empty() ? 'A' : t.back()); break;
+					case SDL_GAMEPAD_BUTTON_DPAD_LEFT: if (!t.empty()) t.pop_back(); break;
+					default: return false;
+					}
+				} else
+					return false;
+				st->error.clear();
+				if (enter) {
+					if (st->typed.empty()) st->error = "Type a seed: a random fighter's name, from its energy bar";
+					else if (!vf->random_fighter_names().count(st->typed)) st->error = "No fighter has the seed " + st->typed;
+					else { set_kind(st->typed); st->typing = st->pending = false; rebuild(pl, true); return true; }
+				}
+				ctx->refresh_menu();
+				return false;
+			};
+			fighter_row[pl] = int(p.items.size());
+			p.items.push_back({ pl ? "Player 2 fighter" : "Player 1 fighter",
+				"Normal: pick at the select. Random: a new mixed fighter every game. Seed: one mixed fighter, the same build and "
+				"moves every game on any machine. Colours are new every game. Secret character: one cut from the game, or Dural. Anything but "
+				"Normal is picked for you at the select.",
+				[this, pl, st] { return std::string(KINDS[st->typing || st->pending ? 2 : kind_of(pl)]); },
+				[this, pl, st, set_kind, start_typing](int d) {
+					const int k = wrap((st->pending ? 2 : kind_of(pl)) + d, 4);
+					st->typing = st->pending = false; st->error.clear();
+					if (k == 0) set_kind("");
+					else if (k == 1) set_kind("*");
+					else if (k == 3) set_kind("#" + std::to_string(st->secret));
+					else if (!random_named[pl].empty() && vf->random_fighter_names().count(random_named[pl])) set_kind(random_named[pl]);
+					else { st->pending = true; set_kind("*"); }   // (no seed yet: Random until one is typed in its row)
+					rebuild(pl, false);
+				},
+				{}, false,
+				[this, pl, st, set_kind] { st->typing = st->pending = false; set_kind(""); rebuild(pl, false); } });
+			fighter_sub[pl] = -1;
+			const int kind = st->typing || st->pending ? 2 : kind_of(pl);
+			if (kind == 2) {
+				fighter_sub[pl] = int(p.items.size());
+				menu_item it{ "Seed",
+					"A random fighter's name, from its energy bar: the same seed is the same build and moves on any machine, in new colours each game. Enter: type a new one.",
+					[this, pl, st] { return st->typing ? st->typed + "_" : st->pending ? std::string("Enter to type a seed (Random till then)") : random_player[pl]; },
+					{}, start_typing };
+				it.below = [st] { return st->typing ? st->error : std::string(); };
+				it.sub = true;
+				p.items.push_back(it);
+			} else if (kind == 3) {
+				fighter_sub[pl] = int(p.items.size());
+				static const char *ABOUT[] = { "",
+					"Siba (Majido): an Arabian fighter cut before release; his moves are mostly Lau's. Unfinished: borrowed moves, no throws.",
+					"Jeff: an early Jeffry, cut before release; his moves are Jacky's. Unfinished: borrowed moves, no throws.",
+					"Takeru: the early Akira, before he was renamed. Unfinished: borrowed moves, no throws.",
+					"Rekka: one of the Koskol brothers, meant as the final bosses. Unfinished: borrowed moves, no throws.",
+					"Score: one of the Koskol brothers, meant as the final bosses. Unfinished: borrowed moves, no throws.",
+					"Aeon: one of the Koskol brothers, meant as the final bosses. Unfinished: borrowed moves, no throws.",
+					"Dural: the final boss, playable." };
+				menu_item ch{ "Character", ABOUT[std::clamp(st->secret, 1, 7)],
+					[st] { return std::string(UNUSED_CHARACTERS[std::clamp(st->secret, 1, int(std::size(UNUSED_CHARACTERS)) - 1)]); },
+					[this, pl, st, set_kind](int d) {
+						st->secret = 1 + wrap(st->secret - 1 + d, N_SECRET - 1);
+						set_kind("#" + std::to_string(st->secret));
+						rebuild(pl, true);   // (its help: this character's)
+					} };
+				ch.sub = true;
+				p.items.push_back(ch);
+			}
+		}
+		p.items.push_back({ "Random opponents",
+			"Every computer opponent a random fighter, looks and moves, made afresh for each match.",
+			[this] { return on_off(random_cpu); },
+			[this](int) {
+				random_cpu = !random_cpu;   // (applied as the game restarts)
+				random_now();
 				changed();
-				vf->set_akira_slot(akira_slot);
-				load_secret_icon(*vf, akira_slot, icon_dirs());
 			} });
 		static const char *WHO[] = { "Off", "Player 1", "Player 2", "Both" };
+		heading("FIGHT");
 		p.items.push_back({ "Infinite energy", "Energy stays full: hits land but never knock out.",
 			[this] { return std::string(WHO[infinite_energy]); },
 			[this](int d) { infinite_energy = wrap(infinite_energy + d, 4); changed(); } });
@@ -229,6 +410,10 @@ private:
 		p.items.push_back({ "Ring", "Tiny is half the smallest ring: ring outs everywhere. Huge is far wider than the stage: no ring outs.",
 			[this] { return std::string(RING[ring_cheat]); },
 			[this](int d) { ring_cheat = wrap(ring_cheat + d, 3); changed(); vf->set_ring_width(ring_now()); } });
+		heading("LOOKS");
+		p.items.push_back({ "Kage's mask", "Comes off: a hit that knocks Kage's hood back shows his face, as on a cabinet that's been played for nine hours. As the arcade: it stays on until this game has been played that long.",
+			[this] { return std::string(kage_unmasked ? "Comes off" : "As the arcade"); },
+			[this](int) { kage_unmasked = !kage_unmasked; changed(); vf->set_kage_unmasked(kage_unmasked); } });
 		p.items.push_back(ctx->back_item());
 		return p;
 	}

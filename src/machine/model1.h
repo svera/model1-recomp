@@ -30,6 +30,8 @@ enum { MAT_STACK_SIZE = 32 };
 
 class model1 : public v60_bus
 {
+	friend struct model1_sky_test;
+	friend struct model1_video_test;
 public:
 	// Screen: 496x384, 60 Hz (MAME: 16 MHz pixel clock, 656x426 total)
 	static constexpr int SCREEN_W = 496, SCREEN_H = 384;
@@ -78,6 +80,12 @@ public:
 	uint16_t tile_word(uint32_t o) const { return m_tiles.tile_r(o); }   // 700000 + 2*o
 	// For the games' own code (src/games): their ROM patches, tiles, characters, colours, state
 	std::vector<uint8_t> &program_rom() { return m_regions.maincpu; }
+	const std::vector<uint8_t> &polygon_rom() const { return m_regions.polygons; }
+	const float *render_matrix() const { return m_view->translation; }
+	bool redrawing() const { return m_redrawing; }
+	bool replaying() const { return m_replaying; }
+	const float *polygon_data(bool ram) const { return ram ? reinterpret_cast<const float *>(m_poly_ram.get()) : reinterpret_cast<const float *>(m_poly_rom); }
+	uint16_t texture_word(uint32_t i) const { return m_tgp_ram[i]; }
 	void tile_write(uint32_t o, uint16_t v) { m_tiles.tile_w(o, v, 0xffff); }
 	uint16_t char_word(uint32_t o) const { return m_tiles.char_r(o); }
 	void char_write(uint32_t o, uint16_t v) { m_tiles.char_w(o, v, 0xffff); }
@@ -100,7 +108,9 @@ public:
 	void set_sky_filter(bool smooth);
 	// Antialiasing's Low: the 3D's edges smoothed after it's drawn (edge_aa.cpp), at the render
 	// scale, for about a tenth of the cost of drawing 4 times the pixels
-	void set_edge_aa(bool on) { m_edge_aa = on; }
+	void set_edge_aa(bool on) { if (m_edge_aa != on) { m_edge_aa = on; recheck_gpu3d(); } }
+	void set_gpu_edge(bool on) { m_gpu_edge = on; }
+	bool m_gpu_edge = false;
 	bool edge_aa() const { return m_edge_aa; }
 	uint32_t backdrop_hash() const;
 	int sky_identity();                 // the stage sky in the map (-1: none known), see model1_sky.cpp
@@ -152,6 +162,7 @@ public:
 		std::vector<rect> d3_changed;               // what changed in TEX_3D (the rest stays as it was)
 		bool d3_all = false;                        // all of it
 		int d3_target = -1;                         // the 3D drawn by the GPU into the host's target texture
+		bool d3_edge = false;
 		                                            // this many (gpu3d::draw_target), not into TEX_3D's image
 	};
 	// 1: drawn in parts; 2: drawn whole into frame() instead (a 4:3 screen's painted sides; the
@@ -243,6 +254,7 @@ public:
 		float z = 0;
 		int col = 0;
 		uint32_t obj = 0;      // the model it came from (its polygon data's address)
+		bool foreground = false;
 	};
 
 	// v60_bus
@@ -286,6 +298,8 @@ private:
 		uint16_t hscr = 0, vscr = 0;                 // the sky map's scroll
 		std::vector<struct slot> slots;              // matrix commands and the objects drawn with each
 		int objects = 0;
+		double move = -1, carried = 0;
+		bool still = false;
 		std::array<float, 12> camera{};              // (video_traits::records) the camera as the list was written
 		bool has_camera = false;
 		// (records) the camera's turn smoothed (blend_by_records): its rotation (a quaternion, w x y
@@ -322,8 +336,8 @@ private:
 	static constexpr double MAX_SKY_STEP = 160;     // the most smooth motion moves the sky between frames
 	// the sky's scroll each frame, as the tile chip has it (h, v) and with the fractions the game
 	// dropped (hx, vy: h & 0x1ff and v & 0x3ff plus those); nx, ny: the next frame's, worked out as
-	// this one ends (next: when it could be)
-	struct sky_sample { int frame = -1; uint16_t h = 0, v = 0; float hx = 0, vy = 0, nx = 0, ny = 0; bool next = false; int lands_h = 0, lands_v = 0; };
+	// this one ends (next_h/next_v: when that axis could be)
+	struct sky_sample { int frame = -1; uint16_t h = 0, v = 0; float hx = 0, vy = 0, nx = 0, ny = 0; bool next_h = false, next_v = false; int lands_h = 0, lands_v = 0; };
 	sky_sample m_sky_hist[SKY_HIST];
 	struct sky_scroll { uint16_t h = 0, v = 0; float hx = 0, vy = 0; };
 	sky_scroll sky_scroll_from_ram(bool between) const;   // what the game's routine writes, from what it reads
@@ -339,6 +353,13 @@ private:
 	void blend_by_records(const logic_frame &a, const logic_frame &b, double alpha);
 	int repair_by_camera(const logic_frame &a, const logic_frame &b, std::vector<int> &pair, const std::vector<char> &changed_run);
 	bool m_camera_cut = false;    // (repair_by_camera: the camera's move between the two lists is a cut)
+	static double list_move(const logic_frame &a, const logic_frame &b);
+	int m_still_carried = -1;
+	bool m_camera_sure = false;
+	std::vector<float> m_cam_res;
+	struct cam_move { int from = -1, to = -1; double d[3] = {}; double turn = 0, ratio = 0; };
+	cam_move m_cam_move[16];
+	int m_cam_move_next = 0;
 	void index_objects(logic_frame &lf);
 	void record_frame();
 	bool smooth_matrix(uint32_t poly_adr, float *out);
@@ -494,6 +515,7 @@ public:
 	// Auto's measure (model1_video.cpp); differ: also the test picture drawn once more each way and
 	// compared, its pixels that differ
 	bool bench3d(int reps, double &cpu_ms, double &gpu_ms, long long *differ = nullptr);
+	void recheck_gpu3d();
 	int m_gpu3d_check = 0;     // tests (M1_GPU3D_CHECK=n): every n-th GPU picture drawn by the CPU too and compared
 private:
 	uint64_t m_frame = 0;
@@ -931,6 +953,7 @@ public:
 	// every 60 with a fight's polygons): a difference is a failure (m_g3.failed: the CPU's then).
 	// (last: the members before it where they were)
 	int m_gpu3d_verify = 0;
+	void cpu_3d_let_go();
 	// When the GPU's picture differs from the CPU's, how wrong it is, not how many pixels: some
 	// graphics cards' drivers (NVIDIA's on Direct3D 12) put pixels a hair off. Colours within
 	// GPU_ROUNDING_COLOUR anywhere are rounding; past that, up to 1% of the pixels, and up to 5%

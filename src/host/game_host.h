@@ -26,6 +26,9 @@ struct host_context
 	std::function<void(menu_page)> push_page;
 	std::function<menu_item()> back_item;
 	std::function<void()> service_menu;      // closes our menu; the game's own test menu opens
+	std::function<void(menu_page, int)> replace_page;
+	std::function<void(const std::string &, std::function<bool(const SDL_Event &)>, std::function<void()>)> capture;
+	std::function<void()> refresh_menu;
 };
 
 class game_host
@@ -44,6 +47,8 @@ public:
 	virtual void start(host_context &) {}
 	// Once, before the first boot: the game's pictures, the settings it reads at boot.
 	virtual void before_boot() {}
+	// Every restart, before boot: apply settings that patch recompiled game code.
+	virtual bool before_restart() { return false; }
 	// After each boot (a reset); true: boot again (a setting the game reads at boot was put back).
 	virtual bool booted() { return false; }
 
@@ -53,7 +58,9 @@ public:
 	virtual void keep_arcade_settings() {}
 	virtual void play_style_changed() {}
 
-	// The main menu's own pages: after Game, and after Controls.
+	// Game-specific choices in Display and Game, and main-menu pages after Game and Controls.
+	virtual std::vector<menu_item> display_menu_items() { return {}; }
+	virtual std::vector<menu_item> game_menu_items() { return {}; }
 	virtual std::vector<menu_item> menu_items() { return {}; }
 	virtual std::vector<menu_item> menu_items_after_controls() { return {}; }
 	// The menu closed: whether the game restarts, and with its code changed (recompiled first).
@@ -62,6 +69,14 @@ public:
 
 	// Before each game frame
 	virtual void before_frame() {}
+	virtual void after_frame() {}
+	virtual bool hide_frame() const { return false; }
+
+	// Optional text accompanying the battery-backed save (games without one return an empty name).
+	virtual const char *save_sidecar_name() const { return ""; }
+	virtual std::string save_sidecar() const { return {}; }
+	virtual void load_sidecar(const std::string &) {}
+	virtual uint32_t save_sidecar_version() const { return 0; }
 
 	// M1_TRACE's six columns of the game's own state (VF: the fighters' health, rounds, the fight's
 	// state); zeros when the game has none

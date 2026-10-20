@@ -175,6 +175,20 @@ test-model1io-adc: $(BIN)/model1io_adc_test
 
 # (the games come from the registry, so a game's tests (its game.mk) link the machine with every game in it)
 GAMES_LINK = $(call objs,$(CORE) $(MACHINE) $(SOUND)) $(MUSASHI_OBJ) $(Z80_OBJ)
+$(BIN)/model1_sky_test: $(OBJ)/tests/model1_sky_test.o $(GAMES_LINK)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
+test-model1-sky: $(BIN)/model1_sky_test
+	$(BIN)/model1_sky_test
+.PHONY: test-model1-sky
+
+$(BIN)/model1_video_test: $(OBJ)/tests/model1_video_test.o $(GAMES_LINK) $(call objs,$(RT) $(NATIVE)) $(REC_NONE) $(SLJIT_OBJ) $(CORO_OBJ)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
+test-model1-video: $(BIN)/model1_video_test
+	$(BIN)/model1_video_test
+.PHONY: test-model1-video
+
 # The launch-time ROM loader against tools/romset.py (needs the player's zips: those present are checked)
 $(BIN)/romset_test: $(call objs,tests/romset_test.cpp $(ROMSET) $(wildcard src/games/*/romset.cpp))
 	@mkdir -p $(dir $@)

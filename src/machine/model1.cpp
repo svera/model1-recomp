@@ -48,6 +48,10 @@ void model1::reset()
 	m_shown = m_unshown = false;                      // nor shown
 	m_tiles_updated = ~0ull;
 	m_list_written[0] = m_list_written[1] = ~0ull;
+	m_still_carried = -1;
+	m_cam_move_next = 0;
+	for (auto &move : m_cam_move) move = {};
+	if (m_gameplay.reset) m_gameplay.reset();
 	m_bank_base = 0x1000000;
 	m_maincpu.set_irq_line(CLEAR_LINE);
 	copro_reset();
@@ -381,7 +385,11 @@ void model1::bus_write16(uint32_t a, uint16_t v, uint16_t mask)
 	};
 	auto combine = [&](uint16_t &d) { d = (d & ~mask) | (v & mask); };
 	if (a >= 0x400000 && a < 0x410000) { wr(&m_ram_a[a - 0x400000]); return; }
-	if (a >= 0x500000 && a < 0x540000) { wr(&m_ram_b[a - 0x500000]); return; }
+	if (a >= 0x500000 && a < 0x540000) {
+		wr(&m_ram_b[a - 0x500000]);
+		if (a == m_gameplay.work_ram_watch && m_gameplay.work_ram_written) m_gameplay.work_ram_written(mask);
+		return;
+	}
 	if (a >= 0x600000 && a < 0x610000) { combine(m_display_list0[(a - 0x600000) >> 1]); m_list_written[0] = m_frame; list_written(0, (a - 0x600000) >> 1); return; }
 	if (a >= 0x610000 && a < 0x620000) { combine(m_display_list1[(a - 0x610000) >> 1]); m_list_written[1] = m_frame; list_written(1, (a - 0x610000) >> 1); return; }
 	if (a >= 0x680000 && a < 0x680004) { model1_listctl_w((a - 0x680000) >> 1, v, mask); return; }
@@ -449,6 +457,8 @@ void model1::set_aspect(float aspect)
 
 void model1::resize_frame()
 {
+	const int w = (SCREEN_W + 2 * m_ext) * m_scale, h = SCREEN_H * m_scale;
+	if (m_bitmap.width() != w || m_bitmap.height() != h) recheck_gpu3d();
 	// the view's clip is kept in render pixels: undo the old widening before changing it
 	view_t *v = m_view.get();
 	float gx1 = v->lx1, gx2 = v->lx2;
@@ -472,9 +482,11 @@ void model1::redraw()
 {
 	const auto render_done = m_render_done;     // emulation state: drawing again mustn't touch it
 	const int quads = m_last_quads;
-	if (!m_smooth)
+	if (!m_smooth) {
+		m_redrawing = true;
 		screen_update(m_bitmap, m_bitmap.cliprect());   // the frame drawn as it ran: nothing has moved since
-	else if (!m_shown)
+		m_redrawing = false;
+	} else if (!m_shown)
 		m_bitmap.fill(0);                               // nothing shown since the start or a reset
 	else {
 		// Smooth motion: the moment shown, which is a game frame behind the newest list, and when
@@ -702,8 +714,9 @@ void model1::screen_update(bitmap_rgb32 &bitmap, const rectangle &cliprect)
 	}
 	if (m_ext) {
 		if (m_gameplay.wide_scene) m_camera_wide = m_gameplay.wide_scene(camera, m_camera_wide);
+		if (known && !camera) m_camera_wide = false;
+		else if (!known && !camera && !m_camera_wide && sky_identity() >= 0) m_camera_wide = true;
 		bool wide = m_camera_wide;
-		if (known && !camera) wide = false;
 		static const bool log_wide = getenv("M1_LOG_WIDE") != nullptr;
 		if (log_wide && wide != m_wide_frame)
 			fprintf(stderr, "frame %llu: %s\n", (unsigned long long)m_frame, wide ? "wide" : "4:3");
@@ -780,7 +793,8 @@ void model1::screen_update(bitmap_rgb32 &bitmap, const rectangle &cliprect)
 	if (g3) gpu3d_end(bitmap);
 	else { m_g3.gpu = false; m_g3.ms = m_raster_ms; m_g3.gpu_ms = 0; }
 	clear_moire_marks(bitmap, cliprect);
-	if (m_edge_aa && !no_polys) {
+	if (m_edge_aa && !no_polys && m_parts && m_parts->d3_target >= 0) m_parts->d3_edge = true;
+	if (m_edge_aa && !no_polys && !(m_parts && m_parts->d3_edge)) {
 		const uint64_t t0 = trace_ns();
 		edge_smooth(bitmap, m_parts != nullptr);
 		m_work.edge_ns += trace_ns() - t0;

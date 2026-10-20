@@ -401,6 +401,17 @@ void model1::fill_quad(bitmap_rgb32 &bitmap, view_t *view, const quad_t& q) cons
 {
 	spoint_t p[8];
 	int color = q.col;
+	if (m_gameplay.wireframe) {
+		const auto col = m_gameplay.wireframe(q.obj, q.col);
+		if (!col) return;
+		const rectangle clip = t_banded ? t_full_clip : rectangle(view->x1, view->x2, view->y1, view->y2);
+		for (int i = 0; i < 4; i++) {
+			const point_t *a = q.p[i], *b = q.p[(i + 1) & 3];
+			if (a->s.x != b->s.x || a->s.y != b->s.y)
+				draw_wireframe_line(bitmap, clip, a->s.x, a->s.y, b->s.x, b->s.y, *col, false);
+		}
+		return;
+	}
 
 	if (color < 0)
 	{
@@ -658,6 +669,8 @@ static int comp_quads(const void *q1, const void *q2)
 
 int model1::quad_t::compare(const model1::quad_t* other) const
 {
+	if (foreground != other->foreground)
+		return foreground ? +1 : -1;
 	float z2 = other->z;
 
 	if (z < z2)
@@ -901,7 +914,11 @@ void model1::fclip_clip_right(view_t *view, point_t *pt, point_t *p1, point_t *p
 
 void model1::fclip_push_quad_next(int level, quad_t& q, point_t *p1, point_t *p2, point_t *p3, point_t *p4)
 {
-	quad_t cquad(q.col, q.z, p1, p2, p3, p4);
+	quad_t cquad(q);
+	cquad.p[0] = p1;
+	cquad.p[1] = p2;
+	cquad.p[2] = p3;
+	cquad.p[3] = p4;
 	fclip_push_quad(level+1, cquad);
 }
 
@@ -1084,7 +1101,11 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 	else
 		poly_data = (float *)m_poly_rom;
 
+	const bool foreground = std::find(m_video->foreground_objects.begin(), m_video->foreground_objects.end(), poly_adr) != m_video->foreground_objects.end();
 	poly_adr &= 0x7fffff;
+	game::object_effects effect;
+	if (m_gameplay.object) effect = m_gameplay.object(tex_adr, poly_adr, size, poly_data);
+	if (effect.hidden) return;
 #if 0
 	dump = poly_adr == 0x944ea;
 	dump = 0;
@@ -1120,6 +1141,10 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 	old_p1->x = poly_data[poly_adr + 3];
 	old_p1->y = poly_data[poly_adr + 4];
 	old_p1->z = poly_data[poly_adr + 5];
+	if (effect.point) {
+		effect.point(old_p0->x, old_p0->y, old_p0->z);
+		effect.point(old_p1->x, old_p1->y, old_p1->z);
+	}
 	m_view->transform_point(old_p0);
 	m_view->transform_point(old_p1);
 
@@ -1171,13 +1196,19 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 		point_t *p1 = m_pointpt++;
 
 		glm::vec3 vn(poly_data[poly_adr + 1], poly_data[poly_adr + 2], poly_data[poly_adr + 3]);
-		const glm::vec3 vn_model = vn;
 		p0->x = poly_data[poly_adr + 4];
 		p0->y = poly_data[poly_adr + 5];
 		p0->z = poly_data[poly_adr + 6];
 		p1->x = poly_data[poly_adr + 7];
 		p1->y = poly_data[poly_adr + 8];
 		p1->z = poly_data[poly_adr + 9];
+		if (effect.normal) effect.normal(vn.x, vn.y, vn.z);
+		if (effect.point) {
+			effect.point(p0->x, p0->y, p0->z);
+			effect.point(p1->x, p1->y, p1->z);
+		}
+		const glm::vec3 vn_model = vn;
+		if (effect.lightmode >= 0) lightmode = effect.lightmode;
 
 		if (type == 2)
 		{
@@ -1227,6 +1258,8 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 #endif
 
 		quad_t cquad;
+		cquad.foreground = foreground;
+		int appearance = 0;
 
 		if (!link)
 			goto next;
@@ -1266,6 +1299,10 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 			cquad.col = scale_color(m_pens[0x1000 | (m_tgp_ram[tex_adr - 0x40000] & 0x3ff)], MIN(1.0, ln));
 #endif
 
+			if (effect.polygon) {
+				appearance = effect.polygon(i);
+				if (appearance < 0) goto next;
+			}
 			// the shade: from the normal turned by the object's matrix and the light
 			auto lum_of = [&](glm::vec3 n, glm::vec3 light) {
 				float dif = glm::dot(n, light);
@@ -1305,6 +1342,7 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 				g = tmp;
 			}
 
+			if (effect.colour) effect.colour(poly_adr, appearance, r, g, b);
 			auto colour_of = [&](int lum) {
 				lum >>= 2; //there must be a luma translation table somewhere
 				if (lum > 0x3f)
@@ -1750,6 +1788,11 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 
 		m_view->init_translation_matrix();
 		float old_z = 0;
+		if (m_gameplay.render_begin) m_gameplay.render_begin();
+		struct render_scope {
+			std::function<void()> &end;
+			~render_scope() { if (end) end(); }
+		} scope{m_gameplay.render_end};
 
 		int list_offset = 0;
 		for (;;) {
@@ -2193,7 +2236,7 @@ void model1::gpu3d_begin(const bitmap_rgb32 &bitmap)
 {
 	m_bitmap_rec_w = bitmap.width(); m_bitmap_rec_h = bitmap.height();
 	m_rec = true;
-	m_rec_bad = false;
+	m_rec_bad = bool(m_gameplay.wireframe);
 	m_rec_batches.clear(); m_rec_quads.clear(); m_rec_points.clear(); m_rec_polys.clear(); m_rec_spans.clear();
 	m_rec_rows = 0;
 	m_rec_y0 = m_rec_m0 = 1 << 30;
@@ -2231,9 +2274,10 @@ void model1::gpu3d_end(bitmap_rgb32 &bitmap)
 		memcpy(m_check_cpu.data(), bitmap.data(), size_t(bitmap.width()) * bitmap.height() * 4);
 	}
 	// Put together in parts on the 3D's own device: straight into the host's texture, nothing back
-	// (but a picture checked against the CPU's, or Low's smoothing, which reads the 3D's pixels, as
-	// before). A failure there: the usual way from now on.
-	if (m_g3_target && m_parts && !check && !m_rec_bad && !m_edge_aa && !m_rec_polys.empty()) {
+	// (but a picture checked against the CPU's, or Low's smoothing done by the CPU, which reads the
+	// 3D's pixels, as before; the host's GPU does it after: set_gpu_edge). A failure there: the
+	// usual way from now on.
+	if (m_g3_target && m_parts && !check && !m_rec_bad && (!m_edge_aa || m_gpu_edge) && !m_rec_polys.empty()) {
 		const int t = m_g3_next;
 		if (m_gpu3d->make_targets(bitmap.width(), bitmap.height(), G3_TARGETS) &&
 			m_gpu3d->draw_target(m_rec_polys.data(), m_rec_polys.size(), m_rec_spans.data(), m_rec_spans.size(), size_t(m_rec_rows) * 2,
@@ -2287,15 +2331,17 @@ void model1::gpu3d_end(bitmap_rgb32 &bitmap)
 				if (diff && gpu_diff_ok(dd, (long long)n)) {   // (rounding: the GPU's kept)
 					fprintf(stderr, "the 3D on the GPU: %zu of %d x %d pixels differ by rounding (%lld drawn on one only, %lld by more than %d, colours by %d at most): keeping the GPU\n",
 							diff, bitmap.width(), bitmap.height(), dd.cover, dd.big, GPU_ROUNDING_COLOUR, dd.most);
-					if (--m_gpu3d_verify == 0) fprintf(stderr, "the 3D on the GPU: the game's pictures checked against the CPU's\n");
+					if (--m_gpu3d_verify == 0) { fprintf(stderr, "the 3D on the GPU: the game's pictures checked against the CPU's\n"); cpu_3d_let_go(); }
 				} else if (diff) {   // (not the CPU's: the CPU's picture shown, and the CPU's from now on)
 					memcpy(bitmap.data(), m_check_cpu.data(), n * 4);
 					m_g3.failed++;
 					m_gpu3d_verify = 0;
 					fprintf(stderr, "the 3D on the GPU: its picture isn't the CPU's (%zu pixels differ, %lld drawn on one only, %lld by more than %d): the CPU's 3D from now on\n",
 							diff, dd.cover, dd.big, GPU_ROUNDING_COLOUR);
-				} else if (--m_gpu3d_verify == 0)
+				} else if (--m_gpu3d_verify == 0) {
 					fprintf(stderr, "the 3D on the GPU: the game's pictures checked against the CPU's, pixel for pixel\n");
+					cpu_3d_let_go();
+				}
 			}
 		}
 	}
@@ -2307,6 +2353,21 @@ void model1::gpu3d_end(bitmap_rgb32 &bitmap)
 	m_rec_quads.clear();   // (the points' copies stay allocated)
 }
 
+void model1::recheck_gpu3d()
+{
+	m_gpu3d_verify = getenv("M1_G3_NO_VERIFY") ? 0 : 3;
+}
+
+// The GPU's pictures checked: release the CPU's drawing buffers until a fallback needs them.
+void model1::cpu_3d_let_go()
+{
+	if (m_gpu3d_check > 0) return;
+	const size_t bytes = m_check_cpu.bytes() + s_owner.capacity() * sizeof(int32_t);
+	m_check_cpu = bitmap_rgb32();
+	std::vector<int32_t>().swap(s_owner);
+	fprintf(stderr, "the 3D on the GPU: the CPU's drawing buffers let go (%.1f MB; made again if it draws)\n", bytes / 1e6);
+}
+
 // Auto's measure (the host's Display > 3D renderer: Auto): a made-up picture the size of a fight's
 // (a floor of large polygons, the backdrop's, two fighters' worth of small ones, their shadows)
 // drawn unseen at the render scale by the CPU and by the GPU, `reps` times each; the median times
@@ -2315,8 +2376,8 @@ bool model1::bench3d(int reps, double &cpu_ms, double &gpu_ms, long long *differ
 {
 	if (!m_gpu3d) return false;
 	const int W = m_bitmap.width(), H = m_bitmap.height();
-	static bitmap_rgb32 scratch;
-	if (scratch.width() != W || scratch.height() != H) scratch.allocate(W, H);
+	bitmap_rgb32 scratch;   // (not kept: once at the start, the GPU's then or the CPU's into the frame)
+	scratch.allocate(W, H);
 	std::vector<point_t> pts;
 	std::vector<quad_t> qs;
 	uint32_t seed = 0x1234567;

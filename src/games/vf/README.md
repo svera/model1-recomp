@@ -24,6 +24,8 @@ For shared Model 1 architecture, build requirements, and repository information,
 | Portable mode, custom ROM folder, menu, keyboard and gamepads | Working |
 | macOS, Windows, Steam Deck / x86-64 Linux | Working |
 | Painted widescreen title and player-select sides | Included in downloads, not in this repository; without them those screens remain 4:3 |
+| Random fighters, named seeds, per-player secret characters and random opponents | Menu > Cheats |
+| English / Japanese game language | Menu > Arcade settings |
 | Online play | Not yet |
 
 ## Play
@@ -104,9 +106,10 @@ click opens the menu; View + LB / RB changes render scale / picture shape. In Ar
 
 ## Secret characters
 
-Menu > Cheats > **Secret character** puts a cut fighter in Akira's player-select spot: Siba (Majido), Jeff, Takeru
-(an early Akira), the Koskol brothers Rekka, Score and Aeon, or Dural. They were unfinished, with borrowed moves
-and no throws.
+Menu > Cheats > **Player 1 fighter** (or **Player 2 fighter**) > **Secret character**, then **Character**, picks
+a cut fighter for that player: Siba (Majido), Jeff, Takeru (an early Akira), the Koskol brothers Rekka, Score and
+Aeon, or Dural. They were unfinished, with borrowed moves and no throws. The other player and computer retain
+the normal Akira.
 
 **Portraits and icons made from the game's own models.** Only Siba had select art. The others now have portraits
 and icons drawn from their real 3D heads using the game's renderer:
@@ -136,8 +139,23 @@ and icons drawn from their real 3D heads using the game's renderer:
 | Aeon | Made portrait and icon; Akira's name and profile | DURAL | |
 | Dural | Made portrait and icon; Akira's name and profile | DURAL | |
 
-They replace Akira, including arcade-mode CPU Akira, so Akira cannot be selected while one is active. Other cheats
-include infinite energy, one-hit KO, no time limit, and a tiny or huge ring.
+Other cheats include infinite energy, one-hit KO, no time limit, a tiny or huge ring, and Kage's unmasked appearance.
+Turning Kage's mask cheat off restores the unlock earned by the arcade's play clock.
+
+## Random fighters
+
+Menu > Cheats > **Player 1 fighter** and **Player 2 fighter** can each be **Normal**, **Random**, **Seed**, or
+**Secret character**. Random fighters combine heads, bodies, limbs, moves and voices from the cast, including
+the unfinished characters. They get their own name on the energy bar and a polygon-by-polygon build animation
+at the start of their first round.
+
+With **Seed**, enter a fighter's energy-bar name to reproduce its build and moves on another machine. Colours
+can change between games. **Random opponents** randomizes the computer's fighters too; the fighters already
+fought are retained through continues and the ending's replays. Non-normal player choices are selected
+automatically. A solo random player's select screen stays hidden to keep the fighter a surprise.
+
+The ranking's extra character names are saved in `ranking_names.txt` beside the backup RAM. Keep that file with
+the save to preserve the names of random and secret fighters on the rankings.
 
 ### Background
 
@@ -158,6 +176,15 @@ MAME cheats:
   portrait of her (and one Koskol brother).
 
 ## Development
+
+Changes from upstream v1.3.2 through
+[`a48890d`](https://github.com/mr-finster/vf1-recomp/commit/a48890df7140206f42fd0d7b86b017e68bc3876e)
+are integrated into the multi-game layout. Fighter data, ROM patches and customization live in this game's
+module; pacing, menus, GPU composition and renderer validation remain shared.
+
+Run `make test-vf-gameplay` for ROM-free settings, cheats, reset and ranking tests. With locally extracted
+regions, `build/bin/vf_gameplay_test build/vf` also checks named-fighter generation, restoration and a scripted
+randomized fight. Add `--native` to exercise startup recompilation of the patched program.
 
 The V60 program is recompiled from the user's `vf.zip` at startup, guided by the address-only map
 `assets/games/vf/vf_map.txt`. No ROM bytes are included. For the shared Model 1 design and developer workflows, see

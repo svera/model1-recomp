@@ -61,6 +61,7 @@ for G in $GAMES; do
 	APP="$P/$NAME.app"
 	rm -rf "$P" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/assets"
 	cp $W/$PROG "$APP/Contents/MacOS/$NAME"
+	strip -S -x "$APP/Contents/MacOS/$NAME"
 	release_assets $G "$APP/Contents/Resources/assets"
 	ICON_KEY=
 	if [ -n "$ICON" ]; then

@@ -59,6 +59,49 @@ also supports:
 VR widens active driving scenes and keeps the track-selection screen and camera-less screens at 4:3. It does not
 use Virtua Fighter's camera IDs or title/select backdrop rules.
 
+The spinning SEGA logo stays in front of close-up cars during attract mode, with either draw distance
+and motion setting. `make test-model1-video` checks the shared foreground sorting; with local regions,
+`build/bin/model1_video_test build/vr` also checks actual logo visibility and unchanged pixels outside it.
+The same regression checks animated palms against their own scenery records rather than nearby cars;
+add `--motion` to run only the motion checks, including native/interpreter comparison.
+
+### Language
+
+Menu > **Game > Language** selects **Japanese** or **English** for the game's own text.
+The existing language is preserved until you change it. Close the menu to apply a changed choice;
+the game restarts, and the choice is kept in VR's EEPROM save alongside the other arcade settings.
+Selecting Reset game also applies a pending language change. Quitting with the menu open saves
+the pending choice for the next launch.
+
+VR calls this setting Country: Japanese selects Japan, and English selects Export. An existing U.S.
+setting is already English and is left unchanged unless you switch to Japanese. Coin settings,
+rankings and other assignments are not reset.
+
+`make test-vr-gameplay` checks both EEPROM representations, checksum coverage, unrelated settings
+and existing U.S. settings. With extracted regions, `build/bin/vr_gameplay_test build/vr --language`
+checks that both choices survive a game reset; use `--language-native` for recompiled execution.
+
+### Draw distance
+
+Menu > **Display > Draw distance** offers **Extended** (the default) and **Arcade**. Extended adds one
+128-unit row of scenery cells beyond the arcade's visible boundary: a 7x7 neighborhood instead of 5x5, still
+culled by viewing direction and bounded by the course grid. This reduces distant scenery pop-in; it is not a
+change to camera zoom. More geometry can lower performance.
+
+Changes apply when the next scenery list is built, without a restart or recompilation. The choice is saved as
+`draw_distance = extended` or `draw_distance = arcade` in VR's own `settings.ini`. Arcade leaves the original
+visibility list unchanged. The near-cell lists used for collision and streaming are unchanged in both modes.
+
+The game selects scenery before it reaches the renderer. VR extends that selection at the game's completed-list
+write, rather than changing a shared far plane or affecting VF. Both interpreter and native execution use the
+same extension; no ROM patch is needed.
+
+`make test-vr-gameplay` checks all 256 cell positions, grid edges, direction masks, list capacity and the Arcade
+switch. With extracted regions, `build/bin/vr_gameplay_test build/vr` compares actual geometry against Arcade
+over 6,000 frames; add `--native` to check recompiled execution without interpreter fallback. Set
+`VR_DISTANCE_SHOTS` to an existing directory to save comparison pictures from the matching-camera frame with
+the largest polygon increase.
+
 ## Experimental native recompilation
 
 The address-only map at `assets/games/vr/vr_map.txt` is generated from scripted coverage and contains no ROM bytes.

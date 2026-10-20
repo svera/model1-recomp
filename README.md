@@ -38,7 +38,7 @@ Useful shared checks:
 
 ```sh
 make test-model1io-adc
-make test-vf-profile test-vr-profile test-vr-gameplay test-vr-tgp-track
+make test-vf-profile test-vf-gameplay test-vr-profile test-vr-gameplay test-vr-tgp-track
 ```
 
 ## Repository layout

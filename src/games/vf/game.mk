@@ -20,4 +20,10 @@ $(BIN)/vf_profile_test: $(OBJ)/tests/games/vf/profile_test.o $(GAMES_LINK)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
 test-vf-profile: $(BIN)/vf_profile_test
 	$(BIN)/vf_profile_test
-.PHONY: test-vf-profile
+
+$(BIN)/vf_gameplay_test: $(OBJ)/tests/games/vf/gameplay_test.o $(GAMES_LINK) $(call objs,$(RT) $(NATIVE)) $(REC_NONE) $(SLJIT_OBJ) $(CORO_OBJ)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
+test-vf-gameplay: $(BIN)/vf_gameplay_test
+	$(BIN)/vf_gameplay_test
+.PHONY: test-vf-profile test-vf-gameplay

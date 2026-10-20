@@ -61,11 +61,32 @@ struct gameplay_state
 	virtual ~gameplay_state() = default;
 };
 
+// Optional per-object effects, in model coordinates and BGR555 colour components.
+// A negative polygon result omits it; nonnegative values are passed to colour.
+struct object_effects
+{
+	bool hidden = false;
+	int lightmode = -1;
+	std::function<void(float &, float &, float &)> point;
+	std::function<void(float &, float &, float &)> normal;
+	std::function<int(int)> polygon;
+	std::function<void(uint32_t, int, int &, int &, int &)> colour;
+};
+
 struct gameplay_callbacks
 {
 	std::shared_ptr<gameplay_state> state;
+	std::function<void()> reset;
 	std::function<void()> frame_begin;
 	std::function<void()> frame_end;
+	// An optional aligned work-RAM word to observe after the CPU writes it (mask: bytes written).
+	uint32_t work_ram_watch = 0;
+	std::function<void(uint16_t)> work_ram_written;
+	std::function<void()> render_begin;
+	std::function<void()> render_end;
+	std::function<object_effects(uint32_t, uint32_t, uint32_t, const float *)> object;
+	// Diagnostic outlines instead of filled polygons; nullopt omits an object.
+	std::function<std::optional<uint32_t>(uint32_t, uint32_t)> wireframe;
 	std::function<std::optional<uint16_t>(uint32_t)> backdrop_tile;
 	std::function<std::vector<uint32_t>(std::string_view)> screen_hashes;
 	std::function<std::optional<std::string_view>(uint32_t)> screen_name;
@@ -86,10 +107,14 @@ struct sky_record
 
 // The RAM the game's sky-scroll routine reads (byte addresses in RAM B, see model1_interp.cpp):
 // the camera's heading (1/32 pixel) and height, the last game frame's, and the byte whose bit 0
-// marks the video frame between two game frames.
+// marks the video frame between two game frames. tile_pair instead holds whole-pixel scrolls:
+// bit 0 selects the current pair, otherwise their half-sum (with the current pair's flags).
 struct sky_camera
 {
 	uint32_t heading, height, last_heading, last_height, between;
+	enum class format { camera, tile_pair };
+	format layout = format::camera;
+	uint32_t control = 0;            // tile_pair: bit 2 disables the sky layer on direct frames
 };
 
 // A texture block the game leaves unset (all FFFF) that the cabinet shows in one palette pen,
@@ -109,6 +134,7 @@ struct matrix_writer
 {
 	uint32_t pc;
 	int record_register;
+	uint32_t caller = 0;             // optional return address at SP; first matching writer wins
 };
 
 struct draw_records
@@ -121,6 +147,7 @@ struct draw_records
 struct video_traits
 {
 	bool smooth_frames = false;      // the 3D blended between game frames (a 30 Hz game's)
+	std::vector<uint32_t> foreground_objects;   // screen-space 3D overlays, sorted after world geometry
 	// polygon ROM addresses below this are the scenery a moving model's shadow falls on, which
 	// above 1x has its shadows kept off the models (0: no such split, shadows drawn as the arcade)
 	uint32_t scenery_polys_end = 0;

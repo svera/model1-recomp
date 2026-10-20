@@ -40,6 +40,7 @@ sec "sljit, Zoltan Herczeg"; cat third_party/sljit/LICENSE
 sec "Musashi (68000), Karl Stenerud"; sed -n '/LICENSE AND COPYRIGHT/,/THE SOFTWARE\./p' third_party/musashi/readme.txt
 sec "Z80 core, Nicolas Allemand"; cat third_party/z80/LICENSE
 sec "RmlUi"; cat third_party/rmlui/LICENSE.txt
+sec "robin_hood and itlib (MIT), built into RmlUi"; cat third_party/rmlui/Include/RmlUi/Core/Containers/LICENSE.txt
 sec "GLM"; cat third_party/glm/copying.txt
 sec "stb_image, Sean Barrett (MIT option)"; sed -n '/ALTERNATIVE A - MIT License/,/^SOFTWARE\.$/p' third_party/stb/stb_image.h
 sec "SDL 3 (zlib)"; cat $SDL_SRC/LICENSE.txt

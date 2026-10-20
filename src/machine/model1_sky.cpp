@@ -447,7 +447,7 @@ void model1::draw_sky(bitmap_rgb32 &bitmap, float sdx, float sdy)
 	if (log && !m_redrawing) {
 		const sky_sample &cs = m_sky_hist[(m_frame - 1) % SKY_HIST];
 		fprintf(stderr, "K %.3f base %d dx %.3f x %.3f dy %.3f h %d v %d read %d%d hx %.3f vy %.3f next %d f %llu\n", m_draw_time, m_sky_base, sdx, m_sky_base + sdx, sdy,
-				m_tiles.tile_r(0x5002) & 0x1ff, m_tiles.tile_r(0x5006) & 0x3ff, int(m_sky_read_h), int(m_sky_read_v), cs.hx, cs.vy, int(cs.next), (unsigned long long)m_frame);
+				m_tiles.tile_r(0x5002) & 0x1ff, m_tiles.tile_r(0x5006) & 0x3ff, int(m_sky_read_h), int(m_sky_read_v), cs.hx, cs.vy, int(cs.next_h && cs.next_v), (unsigned long long)m_frame);
 	}
 	const int y_base = (ref_ty - ref_y) * s + oy;
 	// Above and below the panorama (the camera looking up or down past it): its plain top and
@@ -513,6 +513,7 @@ void model1::draw_screen_sides(bitmap_rgb32 &bitmap)
 	float gain[2][3];
 	for (int side = 0; side < 2; side++) {
 		double game[3] = {}, pic[3] = {};
+		int n = 0;
 		for (int y = 0; y < SCREEN_H; y += 2)
 			for (int i = 0; i < 8; i++) {
 				const int ax = side ? SCREEN_W - 1 - i : i;
@@ -524,6 +525,7 @@ void model1::draw_screen_sides(bitmap_rgb32 &bitmap)
 					game[c] += (g >> (16 - 8 * c)) & 0xff;
 					pic[c] += (p >> (16 - 8 * c)) & 0xff;
 				}
+				n++;
 			}
 		for (int c = 0; c < 3; c++) {
 			float r = pic[c] > 0 ? float(game[c] / pic[c]) : 1.0f;
@@ -533,8 +535,10 @@ void model1::draw_screen_sides(bitmap_rgb32 &bitmap)
 		// A fade takes the colours down (or up) together. Far apart, the backdrop isn't the picture's
 		// yet: the select's first frame from the title has it all one blue, its palette not set, under
 		// the game's black. Black sides, as the picture.
-		const float *g = gain[side];
-		if (std::max({ g[0], g[1], g[2] }) - std::min({ g[0], g[1], g[2] }) > 0.5f)
+		float lo = 2, hi = 0;
+		for (int c = 0; c < 3; c++)
+			if (n && pic[c] / n >= 16) { lo = std::min(lo, gain[side][c]); hi = std::max(hi, gain[side][c]); }
+		if (hi - lo > 0.5f)
 			gain[side][0] = gain[side][1] = gain[side][2] = 0.0f;
 	}
 	const int s = m_scale, left = m_ext * s, right = (m_ext + SCREEN_W) * s, out_w = bitmap.width();

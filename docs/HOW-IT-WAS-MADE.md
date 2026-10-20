@@ -67,7 +67,11 @@ menu (RmlUi), saves, the first-launch file picker, and the parts that go beyond 
   curve that keeps its speed from one game frame to the next, since the game's own steps are uneven. The camera turns
   unevenly too: in a bend about 0.5 degrees a game frame, then 0.06, so the road's lines jerked sideways. Its turn is
   smoothed with an alpha-beta filter, held within a degree of the game's, and the whole 3D picture is turned about the
-  eye to match, so cars and track stay together. A camera turn over 25 degrees or a jump over 8 units is a cut. Running VR's logic at 60 Hz instead isn't possible: it waits for two
+  eye to match, so cars and track stay together. A camera turn over 25 degrees or a jump over 8 units is a cut.
+  VR's sky scroll alternates between the current position and the average of two game frames.
+  The port keeps the half-pixels that average drops and calculates the next horizontal scroll from the game's RAM,
+  so the sky moves between those positions at render resolution instead of extrapolating whole-pixel steps.
+  At 1x and 4:3 the tile layer is unchanged. Running VR's logic at 60 Hz instead isn't possible: it waits for two
   vblanks a frame by design, and its timing (the attract mode, the race clock) counts game frames.
 - **Widescreen.** In fights the 3D view opens out to the sides and the stage sky is drawn from its whole panorama. The
   title and player select get painted side columns, drawn for this port.
@@ -241,6 +245,115 @@ The AI wrote nearly all the code. A person decided what was right.
   touch it.
 - **A crash at exit on Linux** → a widescreen write ran past the end of each line in the tile chip → found with ASan
   and fixed. ASan now runs clean at several scales and shapes.
+
+## Reintegrating upstream after v1.3.2
+
+The upstream production changes through `a48890d` (the v1.4.0 randomizer and subsequent menu, replay and GPU fixes) are
+adapted to the multi-game runtime rather than restoring the original VF-only machine. VF's gameplay state owns
+the random and secret fighters, deterministic name seeds, ROM patches for moves, strands and voices, ranking
+names, and the Kage mask and language options. Its video customization is supplied through game callbacks;
+the shared board does not need to identify a VF character or know its record addresses.
+
+The host keeps the common menu interaction, frame pacing, graphics-driver selection, GPU composition and
+renderer rechecks. VF's own host supplies its fighter settings and ranking-name sidecar. VR retains its existing
+record-based interpolation and sky-scroll handling.
+
+`make test-vf-gameplay` checks the settings, mask unlock, code patch restoration, reset state and ranking-name
+round trip without a ROM. The same test binary accepts a local VF regions directory to check the named seed
+catalog, seeded fighter reproducibility, randomized gameplay and ROM restoration; `--native` runs that gameplay
+through startup-recompiled code. The existing per-game lockstep tools remain the CPU and RAM cross-check.
+The solo random-opponent check also found an indirect dispatch destination missing from VF's address map;
+that observed edge is included so the check runs without interpreter fallback.
+
+The shared camera-cut extrapolation follows upstream's updated curve. It intentionally changes two sampled
+VR smooth-motion pictures around a cut; record-based matching and the unblended 1x pictures are unchanged.
+The disabled upstream `VF_POSE_EASE` / `VF_JOINTLOG` diagnostic experiments are not carried over; normal stance
+blending remains the game's own.
+
+Reintegration checks passed: VF's 18,000-frame native lockstep and both 22,000-frame VR course scenarios,
+the shared and per-game tests, and the randomized VF test on both the interpreter and native code (337
+named fighters, with no native fallback). The randomized interpreter run also passed AddressSanitizer.
+At 1x, 150 VF and 100 VR sampled frames matched the pre-integration runner byte for byte. Isolated desktop
+runs checked Metal rendering, GPU 2D composition and menu/restart behavior without changing the player's saves.
+The SDL-GPU edge shaders still need Windows/Linux runtime validation; this Mac exercises their CPU fallback.
+
+## VR's extended scenery distance
+
+VR does its distance culling in the V60 program, before submitting objects to the shared renderer. Its routine
+at `FF7C1E` selects visible cells from a 5x5 neighborhood of the camera in a 16x16 course grid, each cell 128 units
+wide. At `FF7DC5` it finishes the scenery list at `501CC0`; the camera's cell and visibility mask are still in
+R21 and R22. The game's separate near-cell lists support collision and streaming and must not be enlarged.
+
+VR observes just that completed-list write through an optional shared work-RAM write callback. Extended distance
+adds the outer ring of a 7x7 neighborhood where the original boundary is visible, clips it to the course grid,
+and updates the scenery visibility bits. The original entries retain their order, and at most 49 cells fit in
+the game's 63-entry list. Geometry still goes through the game's own submission and the shared renderer's
+clipping. Arcade mode leaves the write untouched; neither mode changes VF or patches a ROM instruction.
+
+The desktop's Display > Draw distance choice defaults to Extended, saves the choice in VR's settings, and applies it to
+the next list without restarting. The gameplay regression exhaustively checks course-grid boundaries and masks,
+then compares actual rendered polygon counts at matching cameras using local ROMs on the interpreter and native
+runner. In the 6,000-frame Beginner run, 2,361 matching-camera frames draw more geometry, with up to 1,589 extra
+quads; the ranking's camera can now see the distant suspension bridge that the arcade culls.
+The same test passes AddressSanitizer; Arcade's comparison picture matches the pre-change runner byte for byte.
+Native lockstep still passes VF's 18,000 frames and both 22,000-frame VR course scenarios with Extended enabled.
+The native desktop menu was also checked through both choices and a saved Arcade choice across a relaunch.
+
+## VR's foreground SEGA logo
+
+The spinning blue SEGA logo is screen-space 3D, not scenery. Sorting it into the world's polygons
+let close-up cars paint over it during attract mode, with either draw-distance setting and with or
+without smooth motion. A car crossing the eye could even retain a negative sort key after clipping.
+Correcting only negative keys was insufficient: a close car's positive key could also precede the logo.
+
+VR now identifies its logo model in `video_traits::foreground_objects`. The shared sorter draws those
+objects after world geometry, keeping their own depth order and preserving the foreground flag through
+clipping. World depth keys, car/scenery ordering and other games are unchanged; CPU and GPU rasterizers
+consume the same sorted sequence.
+
+`make test-model1-video` checks foreground ordering and flag preservation through clipping without ROMs.
+With local regions, `build/bin/model1_video_test build/vr` checks the affected close-up attract views
+with both distance settings and both motion modes, plus enlarged and widescreen rendering. It compares
+the full picture with an isolated logo, requires every visible logo pixel to survive, reproduces missing
+pixels when the foreground rule is disabled, and checks that pixels outside the logo are unchanged.
+The six ROM-backed cases cover 552 views. A hidden native-host run at 2x widescreen also drew 4,187
+Metal pictures, checked 140 against the CPU with zero differences, and reported no GPU errors or fallbacks.
+
+## VR's animated palm ownership
+
+Animated palms use the same matrix-writing instruction at `FF8500` as cars, but their own object
+record is in R25. R19 still points to the last car tested for a collision. Treating every use of
+that writer as a car part paired palm animation frames with car parts; when models or part counts
+changed, interpolation could carry a palm along with the car instead of keeping its own motion.
+
+Matrix-writer metadata can now qualify a writer by its return address at SP. VR lists the five
+animated-scenery call sites using R25 before the ordinary R19 writer. Car, pit-crew and static-world
+ownership keep their existing rules. This changes only smooth rendering metadata, not game logic,
+ROM code or draw distance, and the original palm animation remains.
+
+The video regression checks all five caller overrides, the car and world fallbacks, and a changing-model
+palm beside a car gaining a part. Its old shared-car ownership reproduces a 2.5-unit midpoint error;
+separate ownership keeps the palm on its own path. With local ROMs,
+`build/bin/model1_video_test build/vr --motion` checks early-attract palm records and interpolation with both draw-distance modes, then
+compares native and interpreter ownership and 2x widescreen pictures through the affected sequence.
+Both distance modes pass 347 views and 2,109 palm-part pairings each; 142 native/interpreter
+in-between pictures match pixel for pixel, without interpreter fallback. The foreground-logo and sky
+regressions still pass.
+
+## VR's language setting
+
+VR now adds Language to the shared Game page, while Draw distance stays in Display. The choice is
+staged until the menu closes or Reset game is selected, and a pending choice is also saved at quit.
+Toggling back to the original language does not restart the game or change an existing U.S. region.
+Japanese selects the arcade's Japan
+country; English selects Export. Existing settings keep their language until the player changes it.
+
+The country is the low byte of EEPROM word 13, copied to `40DC9B` at boot. Both VF and VR use the
+SEGA header and byte-swapped CRC-16/CCITT, but VF checks words 8-63 while VR checks words 5-63.
+A shared EEPROM editor preserves this distinction and both the real I/O board's native words
+and the stand-in board's big-endian bytes. Language edits leave the other assignments and rankings
+alone. ROM-free tests cover both layouts, checksum coverage, invalid choices and U.S. preservation;
+the local-ROM language regression checks reset persistence in interpreter and native execution.
 
 ## Where to look
 
