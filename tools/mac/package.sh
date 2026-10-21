@@ -2,11 +2,10 @@
 # The Mac downloads, each a zip with the app (universal: Apple silicon and Intel, macOS 11 and later,
 # ad-hoc signed: players right-click > Open the first time), README.txt and LICENSES.txt:
 #   tools/mac/package.sh [game ...]   ->  build/mac/<game>/<FILE>Recomp-mac.zip
-#                                         (VirtuaFighterRecomp-mac.zip, VirtuaRacingRecomp-mac.zip)
-# With no game named, every game with downloads is packaged (each one's settings:
-# tools/games/<game>/release/game.sh). Nothing from the ROMs goes in them: the maps contain
-# addresses only, and each game asks for the player's own set at launch. The one exception, the
-# author's call (2026-10-07): assets/games/vf/backgrounds, VF's widescreen sides painted for the title and select.
+#                                         (VirtuaRacingRecomp-mac.zip)
+# With no game named, every game enabled in tools/release/games.sh is packaged (currently VR only;
+# settings: tools/games/<game>/release/game.sh). Nothing from the ROMs goes in them: the maps contain
+# addresses only, and each game asks for the player's own set at launch.
 set -e
 cd "$(dirname "$0")/../.."
 . tools/release/games.sh

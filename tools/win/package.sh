@@ -1,8 +1,8 @@
 #!/bin/bash
 # The Windows releases, cross-compiled on the Mac with MinGW-w64 (brew install mingw-w64):
 #   tools/win/package.sh [game ...]   ->  build/win/<game>/<FILE>Recomp-windows.zip
-#                                         (VirtuaFighterRecomp-windows.zip, VirtuaRacingRecomp-windows.zip)
-# With no game named, every game with downloads is built (each one's settings:
+#                                         (VirtuaRacingRecomp-windows.zip)
+# With no game named, every game enabled in tools/release/games.sh is built (currently VR only; settings:
 # tools/games/<game>/release/game.sh). Each holds the game's .exe, SDL3.dll, the assets, README and
 # LICENSES. No ROMs or anything made from them: each game reads the player's own set at start-up.
 # SDL3, FreeType and zlib: the checked sources every platform builds from (tools/release/deps.sh).

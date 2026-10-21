@@ -5,6 +5,8 @@
 #include "gameplay.h"
 #include "romset.h"
 #include <optional>
+#include <charconv>
+#include <cstdlib>
 
 namespace game::vr {
 namespace {
@@ -17,6 +19,14 @@ public:
 
 	void load_settings(const settings_map &settings) override
 	{
+		if (const auto coins = settings.find("arcade_coins"); coins != settings.end()) {
+			int value;
+			const auto &text = coins->second;
+			const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+			if (result.ec == std::errc{} && result.ptr == text.data() + text.size() && value >= 0 && value <= FREE_PLAY)
+				arcade_coin = value;
+			else fprintf(stderr, "VR: invalid arcade_coins '%s'; expected 0 through %d\n", text.c_str(), FREE_PLAY);
+		}
 		const auto it = settings.find("draw_distance");
 		if (it == settings.end()) return;
 		if (it->second == "arcade" || it->second == "extended") extended = it->second == "extended";
@@ -26,11 +36,16 @@ public:
 	void save_settings(FILE *f) const override
 	{
 		fprintf(f, "draw_distance = %s\n", extended ? "extended" : "arcade");
+		if (arcade_coin >= 0) fprintf(f, "arcade_coins = %d\n", arcade_coin);
 	}
 
 	void start(host_context &context) override
 	{
 		ctx = &context;
+		if (!enable_standalone_car_color(context.machine)) {
+			fprintf(stderr, "VR: standalone car-color support could not be initialized\n");
+			std::abort();
+		}
 		set_extended_draw_distance(context.machine, extended);
 	}
 
@@ -51,7 +66,7 @@ public:
 			language_before = language_value(ctx->machine);
 			language_choice = *language_before;
 		}
-		return { { "Language", "The game's own text: Japanese or English. Changing it restarts the game when the menu closes.",
+		std::vector<menu_item> items{ { "Language", "The game's own text: Japanese or English. Changing it restarts the game when the menu closes.",
 			[this] {
 				return std::string(language_choice < 0 ? "-" : language_choice ? "English" : "Japanese");
 			},
@@ -61,20 +76,104 @@ public:
 					return;
 				}
 				language_choice = ((language_choice + d) % 2 + 2) % 2;
-			} } };
+			} },
+			{ "Service menu",
+				"The arcade's own test menu: machine settings, input and sound tests, coin settings and bookkeeping. Use 9 to move and F2 to select. Choose EXIT to return.",
+				{}, {}, [this] { ctx->service_menu(); } } };
+		if (!machine_before) {
+			std::array<int, 4> values;
+			for (size_t i = 0; i < values.size(); i++)
+				values[i] = machine_setting_value(ctx->machine, machine_setting(i));
+			machine_before = values;
+			machine_choices = values;
+		}
+		static const std::array<const char *, 4> names{ "Car color", "Race type", "Course select", "Difficulty" };
+		static const std::array<std::vector<const char *>, 4> choices{ {
+			{ "Red", "Blue", "Yellow", "Green", "Black", "Pink", "Sky blue", "Orange" },
+			{ "Normal", "Grand Prix" },
+			{ "Majority vote", "Beginner", "Middle", "Expert" },
+			{ "Easy", "Normal", "Hard", "Hardest" }
+		} };
+		for (size_t i = 0; i < names.size(); i++)
+			items.insert(items.end() - 1, { names[i],
+				i == 0 ? "Your car's color in a race, including standalone play. Demo cars keep their arcade colors. Changing it restarts the game when the menu closes."
+					: "The arcade's saved machine setting. Changing it restarts the game when the menu closes.",
+				[this, i] {
+					const int value = machine_choices[i];
+					return std::string(value < 0 ? "-" : choices[i][value]);
+				},
+				[this, i](int d) {
+					auto &value = machine_choices[i];
+					if (value < 0) {
+						fprintf(stderr, "VR: cannot change %s before valid EEPROM settings are available\n", names[i]);
+						return;
+					}
+					const int count = int(choices[i].size());
+					value = ((value + d) % count + count) % count;
+				} });
+		return items;
 	}
 
 	void keep_arcade_settings() override
 	{
-		apply_language();
+		apply_settings();
+		const int now = coin_setting(ctx->machine);
+		if (!ctx->pc_mode && now >= 0 && now != arcade_coin) {
+			arcade_coin = now;
+			ctx->settings_changed();
+		}
+	}
+
+	bool has_play_style() const override { return true; }
+
+	void before_frame() override
+	{
+		bool pressed = false;
+		for (int port : { 1, 2 }) {
+			pressed |= !(ctx->machine.m_inputs[port] & CAMERA_CYCLE_INPUT);
+			ctx->machine.m_inputs[port] |= CAMERA_CYCLE_INPUT;
+		}
+		cameras.update(ctx->machine, pressed);
+	}
+
+	bool booted() override
+	{
+		language_before.reset();
+		machine_before.reset();
+		const int now = coin_setting(ctx->machine);
+		if (now < 0) return false;
+		if (ctx->pc_mode) {
+			if (now != FREE_PLAY && now != arcade_coin) {
+				arcade_coin = now;
+				ctx->settings_changed();
+			}
+			return set_coin_setting(ctx->machine, FREE_PLAY);
+		}
+		return set_coin_setting(ctx->machine, arcade_coin >= 0 ? arcade_coin : now == FREE_PLAY ? 0 : now);
 	}
 
 	restart menu_closed() override
 	{
-		return apply_language() ? restart::game : restart::none;
+		return apply_settings() ? restart::game : restart::none;
 	}
 
 private:
+	bool apply_settings()
+	{
+		bool changed = apply_language();
+		if (machine_before) {
+			for (size_t i = 0; i < machine_choices.size(); i++) {
+				if (machine_choices[i] == (*machine_before)[i]) continue;
+				if (set_machine_setting(ctx->machine, machine_setting(i), machine_choices[i])) {
+					changed = true;
+					ctx->settings_changed();
+				} else fprintf(stderr, "VR: could not apply machine setting %zu to EEPROM\n", i);
+			}
+			machine_before.reset();
+		}
+		return changed;
+	}
+
 	bool apply_language()
 	{
 		const bool changed = language_before && *language_before != language_choice;
@@ -90,8 +189,12 @@ private:
 
 	host_context *ctx = nullptr;
 	bool extended = true;
+	camera_cycle cameras;
+	int arcade_coin = -1;
 	std::optional<int> language_before;
 	int language_choice = -1;
+	std::optional<std::array<int, 4>> machine_before;
+	std::array<int, 4> machine_choices{};
 };
 
 }

@@ -3,13 +3,13 @@
 # SDK container, so the binary runs against the libraries every Steam install has.
 #
 #   tools/linux/package.sh [game ...]   ->  build/linux/<game>/<FILE>Recomp-linux.tar.gz
-#                                           (VirtuaFighterRecomp-linux.tar.gz, VirtuaRacingRecomp-linux.tar.gz)
+#                                           (VirtuaRacingRecomp-linux.tar.gz)
 #
-# With no game named, every game with downloads is built (each one's settings:
+# With no game named, every game enabled in tools/release/games.sh is built (currently VR only; settings:
 # tools/games/<game>/release/game.sh).
 #
 # Needs Docker able to run linux/amd64 images. Packages contain no ROMs: each reads the player's own
-# MAME set (vf.zip, vr.zip) when it starts.
+# MAME set (vr.zip) when it starts.
 set -e
 cd "$(dirname "$0")/../.."
 . tools/release/games.sh

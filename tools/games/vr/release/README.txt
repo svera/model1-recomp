@@ -23,8 +23,9 @@ then confirm. Windows may show SmartScreen for the same reason.
 
 CONTROLS
 Open the menu with Esc or View/Select, then Controls > Player 1. Keyboard: Left/Right steer,
-Up accelerates, Down brakes, X/Z shift up/down. Gamepad: left stick X steers, right trigger
-accelerates, left trigger brakes. The same bindings can be changed there; the game starts with
+Up accelerates, Down brakes, X/Z shift up/down, C cycles the four cameras. Gamepad: left stick X
+steers, right trigger accelerates, left trigger brakes, Y / Triangle cycles cameras.
+The same bindings can be changed there; the game starts with
 the configured Start control.
 
 Display settings, antialiasing, sound, and saves are available from the menu. Virtua Racing

@@ -7,7 +7,7 @@ multiple games; this repository currently supports Virtua Fighter and has experi
 
 | Game | Support | Documentation |
 | --- | --- | --- |
-| Virtua Fighter | Native V60 recompilation; desktop releases for macOS, Windows, and Steam Deck / Linux | [Virtua Fighter guide](src/games/vf/README.md) |
+| Virtua Fighter | Native V60 recompilation; development builds only, release packaging disabled | [Virtua Fighter guide](src/games/vf/README.md) |
 | Virtua Racing | Startup native V60 recompilation; experimental game support | [Virtua Racing guide](src/games/vr/README.md) |
 
 Each game requires the player's own MAME ROM set. No game ROMs or ROM-derived program code are included.
@@ -39,6 +39,9 @@ Development requires a C++20 compiler, zlib, SDL 3, and FreeType. On macOS, inst
 `brew install sdl3 freetype`. Virtua Fighter and Virtua Racing have separate build instructions in their guides.
 Every game has the same make targets, made from its `src/games/<game>/game.mk`: `<game>`, `<game>-native`,
 `<game>-regions`, `<game>-coverage`, `<game>-static`, `<game>-lockstep`, and `<game>-native-lockstep`.
+
+Release packaging is enabled only for Virtua Racing on macOS, Windows, and Linux. Each platform's
+`package.sh` builds VR by default; explicitly requesting `vf` is rejected. VF development targets remain available.
 
 Useful shared checks:
 

@@ -40,15 +40,30 @@ int main()
 	assert(controls.key[C_UP] == SDL_SCANCODE_X);
 	assert(controls.key[C_DOWN] == SDL_SCANCODE_Z);
 	assert(controls.key[game::vr::C_ACCELERATOR] != controls.key[C_RIGHT]);
-	assert(controls.pad[C_BUTTON_3] == PAD_NONE);
+	assert(controls.pad[game::vr::C_CAMERA] == SDL_GAMEPAD_BUTTON_NORTH);
+	assert(controls.key[game::vr::C_CAMERA] == SDL_SCANCODE_C);
 	assert(controls.analog_axis[1] == game::host_axis::right_trigger);
 	assert(game::vr::CONTROLS.visible(game::vr::C_ACCELERATOR));
 	assert(std::string(game::vr::CONTROLS.key_name(game::vr::C_BRAKE)) == "brake");
-	assert(!game::vr::CONTROLS.visible(C_BUTTON_3));   // (two of the button slots: the pedals)
+	assert(game::vr::CONTROLS.visible(game::vr::C_CAMERA));
+	assert(std::string(game::vr::CONTROLS.name(game::vr::C_CAMERA)) == "camera");
 	assert(std::string(game::vr::CONTROLS.name(C_UP)) == "up");   // (pad_up, as before the shift's keys)
 	assert(std::string(game::vr::CONTROLS.label(C_UP)) == "Shift Up");
 	assert(std::string(game::vr::CONTROLS.key_name(C_UP)) == "shift_up");
 	assert(game::vr::CONTROLS.start_bits[0] == game::vr::CONTROLS.start_bits[1]);
+	auto remapped = controls;
+	remapped.load({ { "p1_key_camera", "V" }, { "p1_pad_camera", "a" } }, 0, game::vr::CONTROLS);
+	assert(remapped.key[game::vr::C_CAMERA] == SDL_SCANCODE_V);
+	assert(remapped.pad[game::vr::C_CAMERA] == SDL_GAMEPAD_BUTTON_SOUTH);
+	FILE *saved = tmpfile();
+	assert(saved);
+	remapped.save(saved, 0, game::vr::CONTROLS);
+	rewind(saved);
+	std::string text;
+	for (int ch; (ch = fgetc(saved)) != EOF;) text += char(ch);
+	fclose(saved);
+	assert(text.find("p1_key_camera = V\n") != std::string::npos);
+	assert(text.find("p1_pad_camera = a\n") != std::string::npos);
 	// every pad action the page shows is one the game has
 	for (int a : game::vr::CONTROLS.pad_actions) assert(game::vr::CONTROLS.visible(a));
 }

@@ -1,6 +1,6 @@
 # Sourced by the packaging scripts (tools/<os>/package.sh for mac, win and linux, and
-# tools/linux/container.sh) from the repository's root. A game has downloads when it has
-# tools/games/<game>/release/game.sh, its settings:
+# tools/linux/container.sh) from the repository's root. Enabled games are listed in release_games;
+# each needs tools/games/<game>/release/game.sh, its settings:
 #   TITLE        the app's name ("Virtua Fighter Recomp")
 #   FILE         the .exe's, the Linux folder's and launcher's ($R/$FILE.sh) and the downloads' name
 #   PROG         the make target built (build/bin/$PROG: <game>-native, or <game> on the interpreter)
@@ -13,10 +13,10 @@
 # Every download has assets/ui, assets/fonts and the game's own assets/games/<game> (with whatever
 # is there, including files kept out of the repository such as VF's backgrounds/).
 
-# GAMES: the games named (all with downloads when none); exits on one that has none
+# GAMES: the games named (all enabled games when none); rejects disabled games.
 release_games()
 {
-	ALL=$(for g in tools/games/*/release/game.sh; do [ -f "$g" ] && basename "$(dirname "$(dirname "$g")")"; done | tr '\n' ' ')
+	ALL="vr "
 	GAMES=${*:-$ALL}
 	for G in $GAMES; do
 		case " $ALL" in *" $G "*) ;; *) echo "usage: $0 [game ...] (games: $ALL)" >&2; exit 2 ;; esac

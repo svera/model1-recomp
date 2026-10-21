@@ -119,6 +119,71 @@ static void language_settings(bool board)
 	assert(!set_language(machine, 1) && read() == words);
 }
 
+static void machine_settings(bool board)
+{
+	model1::regions regions;
+	regions.title = game::id{ "vr" };
+	if (board) regions.ioboard.resize(0x10000, 0xff);
+	model1 machine(std::move(regions));
+	auto read = [&] {
+		std::array<uint16_t, 64> words;
+		for (int i = 0; i < 64; i++)
+			words[i] = board ? machine.eeprom_words()[i] :
+				uint16_t(machine.eeprom()[2 * i] << 8 | machine.eeprom()[2 * i + 1]);
+		return words;
+	};
+	auto write = [&](const std::array<uint16_t, 64> &words) {
+		for (int i = 0; i < 64; i++)
+			if (board) machine.eeprom_words()[i] = words[i];
+			else {
+				machine.eeprom()[2 * i] = uint8_t(words[i] >> 8);
+				machine.eeprom()[2 * i + 1] = uint8_t(words[i]);
+			}
+	};
+	using game::vr::machine_setting;
+	using game::vr::machine_setting_value;
+	using game::vr::set_machine_setting;
+	std::array<uint16_t, 64> words{};
+	write(words);
+	assert(machine_setting_value(machine, machine_setting::car_color) == -1);
+	assert(!set_machine_setting(machine, machine_setting::car_color, 1) && read() == words);
+	for (int i = 0; i < 64; i++) words[i] = uint16_t(0x1243 + i * 173);
+	words[0] = 0x5345; words[1] = 0x4741;
+	words[16] = 0x0100; words[17] = 0;
+	write(words);
+	constexpr std::array<int, 4> offsets{ 0x22, 0x23, 0x21, 0x20 };
+	constexpr std::array<int, 4> counts{ 8, 2, 4, 4 };
+	for (size_t i = 0; i < counts.size(); i++) {
+		const auto setting = machine_setting(i);
+		for (int value = 0; value < counts[i]; value++) {
+			const auto before = read();
+			const int previous = machine_setting_value(machine, setting);
+			assert(set_machine_setting(machine, setting, value) == (previous != value));
+			const auto after = read();
+			assert(machine_setting_value(machine, setting) == value);
+			const int shift = offsets[i] % 2 ? 0 : 8;
+			for (int word = 0; word < 64; word++)
+				if (word != 4 && word != offsets[i] / 2) assert(after[word] == before[word]);
+			assert(after[offsets[i] / 2] ==
+				uint16_t((before[offsets[i] / 2] & ~(0xff << shift)) | (value << shift)));
+			if (previous != value) {
+				uint16_t crc = 0;
+				for (int bit = 5 * 16; bit < 64 * 16; bit++) {
+					const bool input = (after[bit / 16] >> (15 - bit % 16)) & 1;
+					const bool top = crc & 0x8000;
+					crc = uint16_t(crc << 1);
+					if (top != input) crc ^= 0x1021;
+				}
+				assert(after[4] == uint16_t(crc >> 8 | crc << 8));
+			}
+			assert(!set_machine_setting(machine, setting, value) && read() == after);
+		}
+		const auto before = read();
+		assert(!set_machine_setting(machine, setting, -1) && read() == before);
+		assert(!set_machine_setting(machine, setting, counts[i]) && read() == before);
+	}
+}
+
 static void scenery_lists()
 {
 	model1::regions regions;
@@ -318,6 +383,236 @@ static void rom_draw_distance(const char *dir, bool native)
 		native ? "native" : "interpreter", extra_quads_frames, max_extra_quads, most_extra_at);
 }
 
+static void rom_machine_settings(const char *dir, bool native)
+{
+	model1 machine(load_regions(dir, game::id{ "vr" }));
+	if (native) {
+		rec::hints map;
+		assert(map.read("assets/games/vr/vr_map.txt"));
+		rec::attach(machine.cpu(), "vr");
+		assert(rec::build_native(machine.program_rom(), map));
+		machine.run_cpu = [](int n) { rec::run(n); };
+	}
+	machine.reset();
+	for (int f = 0; f < 900; f++) machine.run_frame();
+	const auto rom = machine.program_rom();
+	constexpr std::array<int, 4> offsets{ 0x22, 0x23, 0x21, 0x20 };
+	constexpr std::array<std::array<int, 4>, 4> configurations{ {
+		{ 7, 1, 3, 3 }, { 2, 0, 2, 2 }, { 1, 1, 1, 0 }, { 0, 0, 0, 1 }
+	} };
+	for (const auto &values : configurations) {
+		for (size_t i = 0; i < values.size(); i++) {
+			const auto setting = game::vr::machine_setting(i);
+			const bool changed = game::vr::machine_setting_value(machine, setting) != values[i];
+			assert(game::vr::set_machine_setting(machine, setting, values[i]) == changed);
+		}
+		std::array<uint16_t, 64> saved;
+		std::copy_n(machine.eeprom_words(), saved.size(), saved.begin());
+		machine.reset();
+		if (native) rec::attach(machine.cpu(), "vr");
+		for (int f = 0; f < 900; f++) machine.run_frame();
+		assert(std::equal(saved.begin(), saved.end(), machine.eeprom_words()));
+		for (size_t i = 0; i < values.size(); i++) {
+			assert(game::vr::machine_setting_value(machine, game::vr::machine_setting(i)) == values[i]);
+			assert(machine.nvram()[0xdc80 + offsets[i]] == values[i]);
+		}
+		assert(machine.program_rom() == rom);
+		if (native) {
+			if (rec::fallback_count())
+				fprintf(stderr, "VR settings fallback: %06x (%zu calls)\n", rec::first_fallback_address(), rec::fallback_count());
+			assert(rec::fallback_count() == 0);
+		}
+	}
+	printf("VR machine settings (%s): arcade reads all four choices after reboot, with unchanged EEPROM and ROM\n",
+		native ? "native" : "interpreter");
+}
+
+static void rom_cameras(const char *dir, bool native)
+{
+	model1 machine(load_regions(dir, game::id{ "vr" }));
+	if (native) {
+		rec::hints map;
+		assert(map.read("assets/games/vr/vr_map.txt"));
+		rec::attach(machine.cpu(), "vr");
+		assert(rec::build_native(machine.program_rom(), map));
+		machine.run_cpu = [](int n) { rec::run(n); };
+	}
+	machine.reset();
+	for (int f = 0; f < 900; f++) machine.run_frame();
+	assert(game::vr::set_coin_setting(machine, game::vr::FREE_PLAY));
+	machine.reset();
+	for (int f = 1; f <= 6000 && machine.work_ram()[0x1138] != 0x14; f++) {
+		machine.m_inputs[0] = uint8_t(~((f >= 3000 && f < 3006) || (f >= 3120 && f < 3126) ? 0x10 : 0));
+		assert(machine.set_analog_input(0, 0x80));
+		machine.run_frame();
+	}
+	assert(machine.work_ram()[0x1138] == 0x14);
+	game::vr::camera_cycle cameras;
+	auto frame = [&](bool pressed) {
+		std::fill(std::begin(machine.m_inputs), std::end(machine.m_inputs), 0xff);
+		cameras.update(machine, pressed);
+		machine.run_frame();
+	};
+	for (int f = 0; f < 30; f++) frame(false);
+	const int initial = machine.read8(0x501d02);
+	constexpr std::array<int, 4> next{ 3, 0, 1, 2 };
+	int expected = initial;
+	for (int press = 0; press < 8; press++) {
+		expected = next[expected];
+		for (int f = 0; f < 30; f++) frame(true);
+		assert(machine.read8(0x501d02) == expected);
+		for (int f = 0; f < 10; f++) frame(false);
+		assert(machine.read8(0x501d02) == expected);
+	}
+	assert(machine.read8(0x501d02) == initial);
+	machine.reset();
+	for (int f = 0; f < 900; f++) frame(true);
+	assert(machine.m_inputs[0] == 0xff && machine.m_inputs[1] == 0xff);
+	if (native) {
+		if (rec::fallback_count())
+			fprintf(stderr, "VR camera fallback: %06x\n", rec::first_fallback_address());
+		assert(rec::fallback_count() == 0);
+	}
+	printf("VR cameras (%s): all four views cycle twice, holding does not repeat, reset clears pulses\n",
+		native ? "native" : "interpreter");
+}
+
+static void rom_car_color(const char *dir, bool native)
+{
+	model1 machine(load_regions(dir, game::id{ "vr" }));
+	const auto original_rom = machine.program_rom();
+	assert(game::vr::enable_standalone_car_color(machine));
+	assert(game::vr::enable_standalone_car_color(machine));
+	if (native) {
+		rec::hints map;
+		assert(map.read("assets/games/vr/vr_map.txt"));
+		rec::attach(machine.cpu(), "vr");
+		assert(rec::build_native(machine.program_rom(), map));
+		machine.run_cpu = [](int n) { rec::run(n); };
+	}
+	machine.reset();
+	for (int f = 0; f < 900; f++) machine.run_frame();
+	assert(game::vr::set_coin_setting(machine, game::vr::FREE_PLAY));
+	for (int color : { 0, 2, 1, 3, 4, 5, 6, 7 }) {
+		game::vr::set_machine_setting(machine, game::vr::machine_setting::car_color, color);
+		if (native) {
+			assert(rec::fallback_count() == 0);
+			rec::attach(machine.cpu(), "vr");
+		}
+		machine.reset();
+		int racing = 0;
+		for (int f = 1; f <= 6000 && racing < 120; f++) {
+			machine.m_inputs[0] = uint8_t(~((f >= 3000 && f < 3006) || (f >= 3120 && f < 3126) ? 0x10 : 0));
+			assert(machine.set_analog_input(0, 0x80));
+			assert(machine.set_analog_input(1, 0xff));
+			machine.run_frame();
+			if (machine.work_ram()[0x1138] != 0x14) continue;
+			racing++;
+			if (racing < 4) continue;
+			const uint32_t player = machine.read32(0x501320);
+			assert(machine.read8(player + 4) == 0);
+			assert(machine.read32(player + 0x3c) == machine.read32(0xfcd395 + 0x1c));
+			const uint32_t table = color ? 0xfcd195 + uint32_t(color) * 32 : 0xfcd395;
+			for (const auto &[field, entry] : std::array<std::pair<uint32_t, uint32_t>, 5>{ {
+				{ 0x18, 4 }, { 0xac, 0 }, { 0xa2, 8 }, { 0xa8, 12 }, { 0xb0, 16 }
+			} })
+				if (machine.read32(player + field) != machine.read32(table + entry)) {
+					fprintf(stderr, "VR color=%d tick=%d field=%x actual=%x expected=%x mode=%d\n",
+						color, racing, field, machine.read32(player + field), machine.read32(table + entry), machine.read8(0x40d826));
+					assert(false);
+				}
+				assert(machine.program_rom() == original_rom);
+			if (racing == 120) {
+				if (const char *shots = getenv("VR_COLOR_SHOTS")) {
+					const std::string path = std::string(shots) + "/color-" + std::to_string(color) + ".png";
+					assert(write_png(path.c_str(), machine.frame().data(), machine.frame_w(), machine.frame_h()));
+				}
+			}
+		}
+		if (racing != 120) fprintf(stderr, "VR color %d: phase=%02x racing=%d\n", color, machine.work_ram()[0x1138], racing);
+		assert(racing == 120);
+	}
+	if (native) {
+		if (rec::fallback_count())
+			fprintf(stderr, "VR color fallback: %06x\n", rec::first_fallback_address());
+		assert(rec::fallback_count() == 0);
+	}
+	printf("VR car color (%s): all eight race liveries honored, with unchanged ROM, car identity and starting position\n",
+		native ? "native" : "interpreter");
+}
+
+static void rom_free_play(const char *dir, bool native)
+{
+	model1 machine(load_regions(dir, game::id{ "vr" }));
+	if (native) {
+		rec::hints map;
+		assert(map.read("assets/games/vr/vr_map.txt"));
+		rec::attach(machine.cpu(), "vr");
+		assert(rec::build_native(machine.program_rom(), map));
+		machine.run_cpu = [](int n) { rec::run(n); };
+	}
+	auto boot = [&] {
+		if (native && rec::fallback_count()) {
+			fprintf(stderr, "VR free-play fallback before reboot: %06x (%zu calls)\n",
+				rec::first_fallback_address(), rec::fallback_count());
+			assert(rec::fallback_count() == 0);
+		}
+		machine.reset();
+		if (native) rec::attach(machine.cpu(), "vr");
+		for (int f = 0; f < 900; f++) machine.run_frame();
+	};
+	boot();
+	const auto rom = machine.program_rom();
+	assert(game::vr::coin_setting(machine) == 0);
+	const uint16_t start_credit = machine.eeprom_words()[10] & 0xff;
+	for (int value = 0; value <= game::vr::FREE_PLAY; value++) {
+		game::vr::set_coin_setting(machine, value);
+		assert(game::vr::coin_setting(machine) == value);
+		assert((machine.eeprom_words()[10] & 0xff) == start_credit);
+		assert(!game::vr::set_coin_setting(machine, value));
+	}
+	// Reproduce the saved-credit launch, then enable native free play without clearing battery RAM.
+	assert(game::vr::set_coin_setting(machine, 0));
+	for (int f = 0; f < 2100; f++) machine.run_frame();
+	machine.m_inputs[0] = uint8_t(~0x01);
+	for (int f = 0; f < 6; f++) machine.run_frame();
+	machine.m_inputs[0] = 0xff;
+	for (int f = 0; f < 30; f++) machine.run_frame();
+	machine.m_inputs[0] = uint8_t(~0x01);
+	for (int f = 0; f < 6; f++) machine.run_frame();
+	machine.m_inputs[0] = 0xff;
+	for (int f = 0; f < 30; f++) machine.run_frame();
+	assert(machine.read16(0x40e818) > 0);
+	boot();
+	assert(machine.work_ram()[0x1138] == 0x10);
+	const auto battery = machine.nvram();
+	assert(game::vr::set_coin_setting(machine, game::vr::FREE_PLAY));
+	assert(machine.nvram() == battery);
+	boot();
+	assert(machine.nvram()[0xdd20] == 1);
+	assert(machine.work_ram()[0x1138] != 0x10);
+	for (int f = 0; f < 600; f++) {
+		machine.run_frame();
+		assert(machine.work_ram()[0x1138] != 0x10);
+	}
+	machine.m_inputs[0] = uint8_t(~0x10);
+	for (int f = 0; f < 6; f++) machine.run_frame();
+	machine.m_inputs[0] = 0xff;
+	for (int f = 0; f < 30; f++) machine.run_frame();
+	assert(machine.work_ram()[0x1138] == 0x10);
+	assert(game::vr::set_coin_setting(machine, 0));
+	boot();
+	assert(machine.nvram()[0xdd20] == 0 && game::vr::coin_setting(machine) == 0);
+	assert(machine.program_rom() == rom);
+	if (native) {
+		if (rec::fallback_count())
+			fprintf(stderr, "VR free-play fallback: %06x (%zu calls)\n", rec::first_fallback_address(), rec::fallback_count());
+		assert(rec::fallback_count() == 0);
+	}
+	printf("VR free play (%s): saved credits do not auto-start, Start selects a course, arcade coinage restored\n",
+		native ? "native" : "interpreter");
+}
+
 static void rom_qualifying(const char *dir, bool native)
 {
 	model1 machine(load_regions(dir, game::id{ "vr" }));
@@ -394,10 +689,20 @@ int main(int argc, char **argv)
 	assert(callbacks.wide_scene(0x5020f0, false));
 	language_settings(false);
 	language_settings(true);
+	machine_settings(false);
+	machine_settings(true);
 	scripted_inputs();
 	scenery_lists();
 	if (argc > 2 && (std::string(argv[2]) == "--language" || std::string(argv[2]) == "--language-native"))
 		rom_language(argv[1], std::string(argv[2]) == "--language-native");
+	else if (argc > 2 && (std::string(argv[2]) == "--settings" || std::string(argv[2]) == "--settings-native"))
+		rom_machine_settings(argv[1], std::string(argv[2]) == "--settings-native");
+	else if (argc > 2 && (std::string(argv[2]) == "--free-play" || std::string(argv[2]) == "--free-play-native"))
+		rom_free_play(argv[1], std::string(argv[2]) == "--free-play-native");
+	else if (argc > 2 && (std::string(argv[2]) == "--car-color" || std::string(argv[2]) == "--car-color-native"))
+		rom_car_color(argv[1], std::string(argv[2]) == "--car-color-native");
+	else if (argc > 2 && (std::string(argv[2]) == "--cameras" || std::string(argv[2]) == "--cameras-native"))
+		rom_cameras(argv[1], std::string(argv[2]) == "--cameras-native");
 	else if (argc > 2 && (std::string(argv[2]) == "--qualifying" || std::string(argv[2]) == "--qualifying-native"))
 		rom_qualifying(argv[1], std::string(argv[2]) == "--qualifying-native");
 	else if (argc > 1) rom_draw_distance(argv[1], argc > 2 && std::string(argv[2]) == "--native");

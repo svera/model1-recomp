@@ -42,6 +42,29 @@ game, by `tools/games/vr/release/make_icon.py`, in the style of Virtua Fighter's
 Open the menu with `Esc` or View / Select, then use Controls to configure Player 1. On a keyboard, Left/Right
 steer, Up accelerates, Down brakes, and X/Z shift up/down. On a gamepad, the defaults are left stick X for
 steering, right trigger for accelerator, and left trigger for brake. Digital controls also include Start and Coin.
+Press **C** or gamepad **Y / Triangle** to cycle through the four race cameras. Holding the button advances
+only once; remap **Cycle camera** under Controls > Player 1 (keyboard or pad buttons).
+
+**Game > Service menu** opens the arcade's internal machine configuration and diagnostics. Use `9` to move
+and `F2` to select; choose **EXIT** to return to the game.
+
+**Game > Play style** selects **PC** (the default) or **Arcade**, as in Virtua Fighter. PC uses the arcade's
+native Free Play setting and waits for Start, even when battery RAM contains credits from an earlier run.
+Arcade restores the cabinet coinage and boot screen. Its coin setting is kept as `arcade_coins` in
+`settings.ini` while PC mode uses Free Play; rankings and other machine settings are not cleared.
+The ROM-backed regression is `build/bin/vr_gameplay_test build/vr --free-play` (or `--free-play-native`).
+
+The Game menu also exposes the arcade's **Car color**, **Race type** (Normal / Grand Prix),
+**Course select** (Majority vote / Beginner / Middle / Expert), and **Difficulty** (Easy / Normal / Hard /
+Hardest). These edit the same EEPROM settings as the service menu, not per-race shortcuts. Changes apply
+together when the menu closes and the game restarts, and are kept in the existing EEPROM save.
+The ROM-backed settings checks (`build/bin/vr_gameplay_test build/vr --settings`, or `--settings-native`)
+verify that the arcade reads the chosen values after reboot without restoring its defaults.
+
+The arcade normally ignores Car color for standalone (NO LINK) races. The desktop app extends this setting
+to the player's standalone race car by selecting the arcade's existing colored model and texture pointers.
+Car identity, starting position and handling are unchanged; linked play and attract-demo colors are left alone.
+`build/bin/vr_gameplay_test build/vr --car-color` (or `--car-color-native`) checks all eight actual race liveries.
 
 **Display > Frame rate** offers **30 FPS (Arcade)**, **60 FPS**, and **120 FPS** (the default).
 30 disables interpolation and preserves the original arcade motion, which updates at approximately

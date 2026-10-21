@@ -12,7 +12,7 @@ vr_LOCK_FRAMES ?= 26000
 $(OBJ)/tests/games/vr/profile_test.o: CXXFLAGS += $(SDL_CFLAGS)
 $(BIN)/vr_profile_test: $(OBJ)/tests/games/vr/profile_test.o $(GAMES_LINK)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS) $(SDL_LIBS)
 test-vr-profile: $(BIN)/vr_profile_test
 	$(BIN)/vr_profile_test
 
