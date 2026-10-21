@@ -269,6 +269,7 @@ void game_menu::click_change(int d)
 
 void game_menu::change(int d)
 {
+	if (m_stack.empty() || size_t(m_sel) >= m_stack.back().items.size()) return;   // (no page open: nothing to change)
 	auto f = m_stack.back().items[m_sel].change;   // a copy: it may rebuild the pages
 	if (!f) return;
 	f(d);
@@ -279,6 +280,7 @@ void game_menu::change(int d)
 // Backspace, which go back a page, nor B)
 void game_menu::clear()
 {
+	if (m_stack.empty() || size_t(m_sel) >= m_stack.back().items.size()) return;   // (no page open: nothing to change)
 	auto f = m_stack.back().items[m_sel].clear;
 	if (!f) return;
 	f();

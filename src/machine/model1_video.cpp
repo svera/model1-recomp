@@ -1778,7 +1778,7 @@ void model1::view_t::set_light_direction(float x, float y, float z)
 	light = light_vector(x, y, z);
 }
 
-void model1::view_t::set_translation_matrix(float* mat)
+void model1::view_t::set_translation_matrix(const float *mat)
 {
 	for (int i = 0; i < 12; i++)
 	{
@@ -1815,6 +1815,7 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 		} scope{m_gameplay.render_end};
 
 		int list_offset = 0;
+		bool retained_drawn = false;
 		for (;;) {
 			int type = readi(list_offset + 0);
 
@@ -1956,6 +1957,32 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 				}
 				m_view->set_translation_matrix(mat);
 				if (m_replaying) m_replay_slot++;
+				if (m_replaying && pass == RENDER_BELOW_HUD && !retained_drawn) {
+					const auto &slots = m_logic[m_replay_older ? 0 : 1].slots;
+					if (m_replay_slot >= 0 && size_t(m_replay_slot) < slots.size() && slots[m_replay_slot].visibility) {
+						retained_drawn = true;
+						const int saved_slot = m_replay_slot;
+						const auto saved_light = m_view->light;
+						float retained_z = old_z;
+						for (size_t i = 0; i < slots.size(); i++) {
+							const auto &part = slots[i];
+							if (!part.retained) continue;
+							m_replay_slot = int(i);
+							if (part.has_light) m_view->light = glm::vec3(part.light[0], part.light[1], part.light[2]);
+							for (const auto &object : part.objects) {
+								float blended[12];
+								m_view->set_translation_matrix(smooth_matrix(object.polygon, blended) ? blended : part.mat);
+								quad_t *first = m_quadpt;
+								push_object(object.texture, object.polygon, object.size, retained_z);
+								for (quad_t *q = first; q < m_quadpt; q++) q->obj = object.polygon;
+								m_shade_from = m_shade_to = m_shade_light = nullptr;
+							}
+						}
+						m_replay_slot = saved_slot;
+						m_view->light = saved_light;
+						m_view->set_translation_matrix(mat);
+					}
+				}
 				if (pass == RENDER_BELOW_HUD) {
 					const std::vector<game::render_object> *extra = nullptr;
 					if (m_replaying) {

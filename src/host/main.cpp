@@ -347,6 +347,42 @@ bool save_blob(const std::string &path, const uint8_t *src, size_t n)
 	return replace_file(path, tmp);
 }
 
+// The saves written off the game's thread: save_blob flushes each file to the disk (a crash mid-save
+// keeps the old one), which on a hard disk waits tens of milliseconds a file, and the autosave ran
+// every few seconds in play: a hitch each time (on an SSD barely noticeable, on a hard disk heavy
+// stutter even at 1x). put() hands over a copy and returns at once; a writer thread saves it, the
+// newest copy of a file winning if two wait. finish() writes what's left and stops.
+struct bg_saver {
+	std::mutex mx;
+	std::condition_variable cv;
+	std::map<std::string, std::vector<uint8_t>> jobs;
+	bool stop = false;
+	std::thread th{ [this] { run(); } };
+	void put(const std::string &path, const void *src, size_t n) {
+		{ std::lock_guard<std::mutex> l(mx); if (stop) return; jobs[path].assign(static_cast<const uint8_t *>(src), static_cast<const uint8_t *>(src) + n); }
+		cv.notify_one();
+	}
+	void run() {
+		std::unique_lock<std::mutex> l(mx);
+		for (;;) {
+			cv.wait(l, [&] { return stop || !jobs.empty(); });
+			if (jobs.empty()) return;   // (stop, nothing left)
+			auto todo = std::move(jobs);
+			jobs.clear();
+			l.unlock();
+			for (auto &[path, bytes] : todo)
+				if (!save_blob(path, bytes.data(), bytes.size())) fprintf(stderr, "couldn't save %s\n", path.c_str());
+			l.lock();
+		}
+	}
+	void finish() {
+		{ std::lock_guard<std::mutex> l(mx); stop = true; }
+		cv.notify_one();
+		if (th.joinable()) th.join();
+	}
+	~bg_saver() { finish(); }
+};
+
 // The menu's choices and the controls, kept in settings.ini next to the saves ("key = value"),
 // with the game's own (its game_host's).
 struct settings
@@ -831,9 +867,12 @@ int main(int argc, char **argv)
 			fclose(f);
 			game_part.load_sidecar(text);
 		}
-	auto save_rank_names = [&] {
-		if (rank_path.empty() || game_part.save_sidecar_version() == rank_saved) return;
+	bg_saver saver;   // (the autosave's writes, off the game's thread)
+	bool rank_put = false;   // (the game's file handed to it: the last save at quit writes it whatever, in case its write failed)
+	auto save_rank_names = [&](bool now) {
+		if (rank_path.empty() || (game_part.save_sidecar_version() == rank_saved && !(now && rank_put))) return;
 		const std::string text = game_part.save_sidecar();
+		if (!now) { saver.put(rank_path, text.data(), text.size()); rank_saved = game_part.save_sidecar_version(); rank_put = true; return; }
 		if (save_blob(rank_path, reinterpret_cast<const uint8_t *>(text.data()), text.size())) rank_saved = game_part.save_sidecar_version();
 	};
 #ifdef M1_NATIVE
@@ -2529,19 +2568,20 @@ int main(int argc, char **argv)
 			}
 		}
 		perf.present += SDL_GetTicksNS() - t1;
-		// The game's backup (rankings, operator settings) saved within a few seconds of changing, so
-		// a crash, a force quit or the Deck's power button doesn't lose it.
+		// The game's backup (rankings, operator settings) saved within a minute of changing, so a
+		// crash, a force quit or the Deck's power button loses at most that (every 3 s before: the
+		// arcade's bookkeeping changes it in play, so it was written that often; and at quit as ever)
 		if (quit_after < 0) {
-			static uint64_t next_check = SDL_GetTicksNS() + 3000000000ull;
+			static uint64_t next_check = SDL_GetTicksNS() + 60000000000ull;
 			if (SDL_GetTicksNS() >= next_check) {
-				next_check = SDL_GetTicksNS() + 3000000000ull;
+				next_check = SDL_GetTicksNS() + 60000000000ull;
 				const uint64_t h = backup_hash();
 				if (h != saved_hash) {
-					save_blob(nv_path, m.nvram().data(), m.nvram().size());
-					save_blob(ee_path, m.eeprom(), model1::EEPROM_SIZE);
+					saver.put(nv_path, m.nvram().data(), m.nvram().size());
+					saver.put(ee_path, m.eeprom(), model1::EEPROM_SIZE);
 					saved_hash = h;
 				}
-				save_rank_names();
+				save_rank_names(false);
 			}
 		}
 		if (++perf.frames == 120) {
@@ -2574,9 +2614,10 @@ int main(int argc, char **argv)
 	gc.release();                          // (its textures go before the renderer)
 	if (quit_after >= 0 && !getenv("M1_SAVE")) { SDL_Quit(); return 0; }   // test runs leave the saves and settings alone (M1_SAVE: they save, as a player's)
 	game_part.keep_arcade_settings();
+	saver.finish();   // (an autosave still being written, done before the last save: the same files)
 	save_blob(nv_path, m.nvram().data(), m.nvram().size());
 	save_blob(ee_path, m.eeprom(), model1::EEPROM_SIZE);
-	save_rank_names();
+	save_rank_names(true);
 	if (cfg_dirty) {
 		cfg.scale = m.render_scale() / aa_now();
 		cfg.aspect = aspect_i;

@@ -1,6 +1,0 @@
-{
-  "name": "stunts-strip",
-  "private": true,
-  "type": "module",
-  "dependencies": { "acorn": "8.12.1", "terser": "5.31.0" }
-}

@@ -1,8 +1,7 @@
 # Virtua Racing
 
-Virtua Racing (Sega, 1992) is supported as an experimental second Model 1 title. The desktop build currently
-runs on the V60 interpreter by default; an address map and separate native-recompiled build are available for
-development and testing.
+Virtua Racing (Sega, 1992) is supported as an experimental second Model 1 title. The desktop build and release
+packages recompile the V60 program to native code at startup. Run with `--interp` to use the interpreter instead.
 
 For shared Model 1 architecture, build requirements, and repository information, see the
 [root README](../../../README.md). For the port's implementation and validation history, see
@@ -35,6 +34,8 @@ start, coin).
 Release packages include no ROMs and need no preparation step or Python. They are produced for macOS
 (`VirtuaRacingRecomp-mac.zip`), Windows (`VirtuaRacingRecomp-windows.zip`), and Steam Deck / x86-64 Linux
 (`VirtuaRacingRecomp-linux.tar.gz`, which reads `vr.zip` from its `roms` folder, as there is no file picker in Game Mode).
+Their app icon (`assets/games/vr/icon`: `icon.png`, `VR.icns`, `VR.ico`) is drawn from scratch, not taken from the
+game, by `tools/games/vr/release/make_icon.py`, in the style of Virtua Fighter's.
 
 ## Controls and display
 
@@ -72,6 +73,17 @@ and motion setting. `make test-model1-video` checks the shared foreground sortin
 `build/bin/model1_video_test build/vr` also checks actual logo visibility and unchanged pixels outside it.
 The same regression checks animated palms against their own scenery records rather than nearby cars;
 add `--motion` to run only the motion checks, including native/interpreter comparison.
+
+At 60/120 FPS, an active car rejected for one update by the arcade's coarse course-cell visibility mask
+keeps its last geometry for that update, moved by its record position and camera from that display list.
+Visibility and positions are captured while the list is built, not from RAM after the next update.
+This presentation-only continuity expires after one update and is cleared at camera cuts; it does not
+modify the ROM, visibility masks, display lists, car physics, or CPU work. The 30 FPS arcade mode keeps
+the original visibility behaviour.
+
+With extracted regions, `build/bin/model1_video_test build/vr --car-visibility` checks the opening
+bridge car at 16:9, both draw distances, and native execution. It checks the missing frame's pixels,
+one-update retention, original slot order, and unchanged CPU registers, RAM and display lists.
 
 ### Language
 
@@ -140,10 +152,10 @@ over 6,000 frames; add `--native` to check recompiled execution without interpre
 `VR_DISTANCE_SHOTS` to an existing directory to save comparison pictures from the matching-camera frame with
 the largest polygon increase.
 
-## Experimental native recompilation
+## Native recompilation
 
 The address-only map at `assets/games/vr/vr_map.txt` is generated from scripted coverage and contains no ROM bytes.
-Build the separate native executable with:
+`make vr` builds the native host as `build/bin/vr`. The explicitly named executable remains available with:
 
 ```sh
 make vr-native
@@ -156,22 +168,51 @@ the repository root. No ROM data is included in the executable.
 `make test-romset` checks the launch-time loader against `tools/romset.py`: every region built from your local
 `roms/vf.zip` and `roms/vr.zip` must match the Python tool's byte for byte.
 
-Run the strict interpreter/native comparison across Beginner and Expert scenarios with:
+Run the strict interpreter/native comparison across all three courses, view-button inputs, test-menu
+entry/exit, and a qualifying Beginner finish with ranking-name entry:
 
 ```sh
 make vr-native-lockstep
 ```
 
 The checks compare CPU registers, RAM, and rendered frames, require no interpreter fallbacks, and assert progress
-through track selection, the starting grid, active racing, and course results. The candidate map passes these
-scenarios, but coverage is not exhaustive release validation. The regular `make vr` target remains
-interpreter-based while more gameplay paths are explored.
+through track selection, the starting grid, active racing, and course results. Course selection is checked
+against the Beginner, Medium, or Expert label. The Beginner and view-button scenarios also check the
+second-credit race and the return to attract rankings after game over. All six scenarios run for 26,000 frames.
+The `qualifying` scenario selects EASY difficulty through the test menu, drives the full five-lap Beginner race
+using only wheel, pedal and shift inputs, then selects and confirms `SDK` with the wheel and accelerator.
+It checks the qualifying-finish state, results, each confirmed initial, the first-place ranking record's name
+and finishing time in battery RAM, and the return to attract rankings. No race-state or ROM fixture is used.
+The feedback driver reads the car state and road geometry; lockstep derives one input packet from the
+interpreter and applies it unchanged to both machines. These are scripted checks, not exhaustive release
+validation: qualifying finishes on Medium/Expert and at the default difficulty remain outside this coverage.
+
+The focused ROM-backed test also checks that the ranking survives a reset and 1,000 boot frames:
+
+```sh
+make build/bin/vr_gameplay_test
+build/bin/vr_gameplay_test build/vr --qualifying
+build/bin/vr_gameplay_test build/vr --qualifying-native
+```
+
+The checkpoints read the game's state-machine byte at `0x501138`: track selection (`0x10`), starting grid
+(`0x12`), racing (`0x14`), qualifying finish (`0x19`), results/game over (`0x1c`), and ranking-name entry
+(`0x1e`). Results are accepted only after racing; attract
+rankings (`0x03`) cannot satisfy that checkpoint. This avoids the unrelated changing mode byte, course-dependent
+result cameras, and polygon counts that depend on draw distance.
 
 To regenerate coverage (`build/cov/vr/`) and the candidate map (`build/gen/vr_map.txt`), run `make vr-static`;
 generated artifacts stay in `build/`. `make vr-lockstep` checks the generated C++ against the interpreter. The
 scenarios and frame counts are in `src/games/vr/game.mk` (`make vr-lockstep vr_LOCK_FRAMES=...` overrides one). Set
 `M1_TGP_TRACE=1` with the headless runner to report whether the TGP ROM-backed core or HLE is active and how many
 MB86233 cycles ran.
+
+The scenarios are `default` (Beginner), `alternate` (Expert), `intermediate` (Medium), `views` (Beginner with
+all four view buttons), `service` (test-menu entry and EXIT), and `qualifying` (EASY Beginner finish and `SDK`
+ranking entry). For example, pass `--scenario intermediate`
+to a headless tool to select Medium. Regenerate coverage after changing a script; the coverage targets depend
+on the rebuilt tool. Promote the generated address map to `assets/games/vr/vr_map.txt` only after strict native
+lockstep passes with it.
 
 To check the shared ADC implementation, run `make test-model1io-adc`. With the optional I/O-board ROM, compare
 analog controls using two runs:

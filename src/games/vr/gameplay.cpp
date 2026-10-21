@@ -5,6 +5,8 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <cmath>
 #include <utility>
 
 namespace game::vr {
@@ -110,6 +112,34 @@ gameplay_callbacks create_gameplay(model1 &machine)
 			prepare_scenery(machine, *state);
 	};
 	callbacks.matrix_objects = [&machine, state] { return scenery_objects(machine, *state); };
+	callbacks.record_visibility = [&machine](uint32_t owner) {
+		std::vector<game::record_visibility> records;
+		if (owner < 0x400d00 || owner > 0x401e80 || (owner - 0x400d00) % 0x280)
+			return records;
+		const auto &ram = machine.work_ram();
+		if (ram[0x1138] != 0x03 && ram[0x1138] != 0x14) return records;
+		for (uint32_t car = 0x400d00; car <= 0x401e80; car += 0x280) {
+			if (!(machine.read32(car) & 0x80000000)) continue;
+			const uint32_t cell = machine.read16(car + 0x34);
+			if (cell >= 256) {
+				fprintf(stderr, "VR car visibility: invalid course cell %u for record %06x\n", cell, car);
+				std::abort();
+			}
+			game::record_visibility result{};
+			result.owner = car;
+			for (int i = 0; i < 3; i++) {
+				const uint32_t bits = machine.read32(car + 0x1e + i * 4);
+				memcpy(&result.position[i], &bits, sizeof bits);
+				if (!std::isfinite(result.position[i])) {
+					fprintf(stderr, "VR car visibility: non-finite position for record %06x\n", car);
+					std::abort();
+				}
+			}
+			result.culled = !(machine.read32(0x501ac0 + (cell / 32) * 4) & (1u << (cell % 32)));
+			records.push_back(result);
+		}
+		return records;
+	};
 	callbacks.wide_scene = [](uint32_t camera, bool) {
 		return camera != 0 && camera != TRACK_SELECT_CAMERA;
 	};

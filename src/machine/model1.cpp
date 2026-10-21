@@ -51,6 +51,10 @@ void model1::reset()
 	m_list_written[0] = m_list_written[1] = ~0ull;
 	m_list_extra[0].clear();
 	m_list_extra[1].clear();
+	for (int buffer = 0; buffer < 2; buffer++) {
+		m_list_visibility[buffer].clear();
+		m_list_visibility_frame[buffer] = ~0ull;
+	}
 	m_still_carried = -1;
 	m_cam_move_next = 0;
 	for (auto &move : m_cam_move) move = {};

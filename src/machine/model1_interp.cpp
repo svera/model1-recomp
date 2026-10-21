@@ -60,6 +60,10 @@ void model1::set_smooth(bool on)
 	if (on == m_smooth) return;
 	m_smooth = on;
 	m_logic[0] = m_logic[1] = m_logic_prev = logic_frame{};
+	for (int buffer = 0; buffer < 2; buffer++) {
+		m_list_visibility[buffer].clear();
+		m_list_visibility_frame[buffer] = ~0ull;
+	}
 	m_shown = false;
 }
 
@@ -86,6 +90,12 @@ void model1::list_written(int buffer, uint32_t word)
 			owner = rec >= r.records_from && rec < r.records_to ? rec : 1;
 			memcpy(m_list_camera[buffer].data(), &m_ram_b[r.camera - 0x500000], sizeof m_list_camera[buffer]);
 			m_list_has_camera[buffer] = true;
+			if (m_list_visibility_frame[buffer] != m_frame) {
+				m_list_visibility[buffer].clear();
+				m_list_visibility_frame[buffer] = m_frame;
+			}
+			if (m_gameplay.record_visibility && m_list_visibility[buffer].empty())
+				m_list_visibility[buffer] = m_gameplay.record_visibility(owner);
 			break;
 		}
 	owners[word & 0x7fff] = owner;
@@ -95,6 +105,7 @@ void model1::index_objects(logic_frame &lf)
 {
 	const std::vector<uint32_t> &owners = m_list_owner[m_picture_buffer];
 	lf.slots.clear();
+	lf.visibility = m_list_visibility[m_picture_buffer];
 	lf.slots.push_back({});                        // objects before the first matrix
 	const uint16_t *l = lf.list.data();
 	auto rdi = [&](int a) { return uint32_t(l[a & 0x7fff] | l[(a + 1) & 0x7fff] << 16); };
@@ -107,6 +118,8 @@ void model1::index_objects(logic_frame &lf)
 		case 0: off += 2; break;
 		case 1: case 0x41:
 			lf.slots.back().polys.push_back(rdi(off + 4));
+			if (rdi(off) == 1 && lf.slots.back().visibility)
+				lf.slots.back().objects.push_back({ rdi(off + 2), rdi(off + 4), rdi(off + 6) });
 			lf.objects++;
 			off += 8;
 			break;
@@ -139,6 +152,8 @@ void model1::index_objects(logic_frame &lf)
 			memcpy(sl.light, light, sizeof light);
 			sl.has_light = has_light;
 			if (!owners.empty()) sl.owner = owners[off & 0x7fff];
+			for (const auto &visibility : lf.visibility)
+				if (visibility.owner == sl.owner) { sl.visibility = visibility; break; }
 			if (auto it = m_list_extra[m_picture_buffer].find(off); it != m_list_extra[m_picture_buffer].end()) {
 				sl.extra = it->second;
 				for (const auto &object : sl.extra) sl.polys.push_back(object.polygon);
@@ -149,6 +164,36 @@ void model1::index_objects(logic_frame &lf)
 		}
 		default: return;
 		}
+	}
+}
+
+void model1::retain_culled_records(logic_frame &frame, const logic_frame &previous)
+{
+	if (!m_gameplay.record_visibility || !frame.has_camera || !previous.has_camera ||
+		frame.frame - previous.frame != 2 || camera_cut(camera_matrix(previous.camera.data()), camera_matrix(frame.camera.data())))
+		return;
+	const glm::mat4 old_inverse = glm::affineInverse(camera_matrix(previous.camera.data()));
+	const glm::mat4 camera = camera_matrix(frame.camera.data());
+	std::unordered_map<uint32_t, bool> present;
+	for (const auto &part : frame.slots) if (!part.polys.empty()) present[part.owner] = true;
+	for (const auto &part : previous.slots) {
+		if (part.retained || !part.visibility || part.objects.empty() || present.count(part.owner)) continue;
+		const auto visibility = std::find_if(frame.visibility.begin(), frame.visibility.end(),
+			[&](const game::record_visibility &v) { return v.owner == part.owner; });
+		if (visibility == frame.visibility.end() || !visibility->culled) continue;
+		const auto &from = part.visibility->position, &to = visibility->position;
+		const glm::vec3 delta(to[0] - from[0], to[1] - from[1], to[2] - from[2]);
+		if (glm::length(delta) > 8) continue;   // a reused record or a teleport, not continuous motion
+		slot retained = part;
+		glm::mat4 world = old_inverse * camera_matrix(part.mat);
+		world[3] += glm::vec4(delta, 0);
+		const glm::mat4 view = camera * world;
+		for (int c = 0; c < 3; c++)
+			for (int r = 0; r < 3; r++) retained.mat[c * 3 + r] = view[c][r];
+		for (int r = 0; r < 3; r++) retained.mat[9 + r] = view[3][r];
+		retained.visibility = *visibility;
+		retained.retained = true;
+		frame.slots.push_back(std::move(retained));
 	}
 }
 
@@ -186,6 +231,7 @@ void model1::record_frame()
 		static const bool log = getenv("M1_LOG_SMOOTH") != nullptr;
 		if (lf.hash != m_logic[1].hash) {
 			const logic_frame &z = m_logic[0], &a = m_logic[1];
+			retain_culled_records(lf, a);
 			lf.move = list_move(a, lf);
 			// A missed game update carries the preceding motion, rather than stopping and catching up.
 			lf.still = lf.move >= 0 && a.move > 0.01 && a.move < 0.3 && lf.move < 0.05 * a.move && !z.list.empty() && lf.frame - a.frame == a.frame - z.frame;

@@ -10,6 +10,134 @@
 
 struct model1_video_test
 {
+	static void car_visibility(const char *dir, bool extended, bool native = false)
+	{
+		model1 m(load_regions(dir, game::id{ "vr" })), reference(load_regions(dir, game::id{ "vr" }));
+		reference.m_gameplay.record_visibility = {};
+		if (native) {
+			rec::hints map;
+			assert(map.read("assets/games/vr/vr_map.txt"));
+			rec::attach(m.cpu(), "vr");
+			assert(rec::build_native(m.program_rom(), map));
+			m.run_cpu = [](int n) { rec::run(n); };
+		}
+		for (auto *machine : { &m, &reference }) {
+			game::vr::set_extended_draw_distance(*machine, extended);
+			machine->set_smooth(true);
+			machine->set_aspect(16.0f / 9);
+			machine->reset();
+		}
+		int retained_frames = 0, checked_pictures = 0;
+		for (int f = 1; f <= 480; f++) {
+			m.run_frame();
+			reference.run_frame();
+			if (f < 469) continue;
+			const auto &b = m.m_logic[1];
+			int parts = 0;
+			for (const auto &part : b.slots) {
+				if (part.owner != 0x401480 || part.polys.empty()) continue;
+				parts++;
+				assert(part.retained == (b.frame == 472));
+			}
+			assert(parts == 3);
+			assert(m.work_ram() == reference.work_ram() && m.nvram() == reference.nvram());
+			for (int r = 0; r < 32; r++) assert(m.cpu().reg(r) == reference.cpu().reg(r));
+			assert(m.cpu().pc() == reference.cpu().pc());
+			assert(b.list == reference.m_logic[1].list);
+			if (b.frame == 472) {
+				retained_frames++;
+				const auto found = std::find_if(b.visibility.begin(), b.visibility.end(),
+					[](const auto &record) { return record.owner == 0x401480; });
+				assert(found != b.visibility.end() && found->culled);
+				const auto live = m.m_gameplay.record_visibility(0x401480);
+				for (const auto &record : live)
+					if (record.owner == 0x401480) assert(!record.culled);
+				const auto &original = reference.m_logic[1].slots;
+				assert(b.slots.size() == original.size() + 3);
+				for (size_t i = 0; i < original.size(); i++)
+					assert(b.slots[i].owner == original[i].owner && b.slots[i].polys == original[i].polys);
+			}
+			for (double fraction : { 0.0, 0.5 }) {
+				m.render_smooth(double(m.frame_number() - 1) + fraction);
+				reference.render_smooth(double(reference.frame_number() - 1) + fraction);
+				if (f != 474) continue;
+				size_t car_pixels = 0;
+				for (int y = 240; y < 340; y++)
+					for (int x = 0; x < 200; x++) {
+						const size_t i = size_t(y) * m.frame_w() + x;
+						car_pixels += m.frame().data()[i] != reference.frame().data()[i];
+					}
+				assert(car_pixels > 1000);
+				checked_pictures++;
+			}
+		}
+		assert(retained_frames == 2 && checked_pictures == 2);
+		if (native) assert(rec::fallback_count() == 0);
+		printf("VR opening car (%s, %s): all three parts retained for one update, visible in both missing-frame pictures; CPU, RAM and lists unchanged\n",
+			extended ? "extended" : "arcade", native ? "native" : "interpreter");
+	}
+
+	static void culled_records()
+	{
+		model1::regions regions;
+		regions.title = game::id{ "vr" };
+		model1 m(std::move(regions));
+		model1::logic_frame previous, current;
+		previous.frame = 470;
+		current.frame = 472;
+		previous.has_camera = current.has_camera = true;
+		for (int i : { 0, 4, 8 }) previous.camera[i] = current.camera[i] = 1;
+		current.camera[9] = 2;
+		model1::slot car;
+		car.owner = 0x401480;
+		car.polys = { 0x1234 };
+		car.objects = { { 0x40000, 0x1234, 0 } };
+		car.mat[9] = 10;
+		car.mat[11] = 20;
+		car.visibility = game::record_visibility{ car.owner, { 10, 0, 20 }, false };
+		previous.slots = { car };
+		current.visibility = { { car.owner, { 11, 0, 20 }, true } };
+		m.m_gameplay.record_visibility = [](uint32_t) -> std::vector<game::record_visibility> {
+			assert(false); // Replay must not sample the next update's RAM.
+			return {};
+		};
+		const auto ram = m.work_ram(), nvram = m.nvram(), rom = m.program_rom();
+		m.retain_culled_records(current, previous);
+		assert(current.slots.size() == 1 && current.slots[0].retained);
+		assert(current.slots[0].owner == car.owner);
+		assert(current.slots[0].objects.front().polygon == 0x1234);
+		assert(std::fabs(current.slots[0].mat[9] - 13) < .0001f);
+		assert(std::fabs(current.slots[0].mat[11] - 20) < .0001f);
+		assert(m.work_ram() == ram && m.nvram() == nvram && m.program_rom() == rom);
+		model1::logic_frame next = current;
+		next.frame += 2;
+		next.slots.clear();
+		m.retain_culled_records(next, current);
+		assert(next.slots.empty());
+		current.slots = { car };
+		m.retain_culled_records(current, previous);
+		assert(current.slots.size() == 1 && !current.slots[0].retained);
+		current.slots.clear();
+		current.visibility[0].culled = false;
+		m.retain_culled_records(current, previous);
+		assert(current.slots.empty());
+		current.visibility.clear();
+		m.retain_culled_records(current, previous);
+		assert(current.slots.empty());
+		current.visibility = { { car.owner, { 11, 0, 20 }, true } };
+		current.camera[9] = 20;
+		m.retain_culled_records(current, previous);
+		assert(current.slots.empty());
+		current.camera[9] = 2;
+		current.visibility[0].position[0] = 100;
+		m.retain_culled_records(current, previous);
+		assert(current.slots.empty());
+		current.visibility[0].position[0] = 11;
+		current.frame = 476;
+		m.retain_culled_records(current, previous);
+		assert(current.slots.empty());
+	}
+
 	static void extra_scenery()
 	{
 		model1::regions regions;
@@ -281,13 +409,24 @@ struct model1_video_test
 
 int main(int argc, char **argv)
 {
+	if (argc > 2 && std::string(argv[2]) == "--car-visibility") {
+		model1_video_test::culled_records();
+		model1_video_test::car_visibility(argv[1], false);
+		model1_video_test::car_visibility(argv[1], true);
+		model1_video_test::car_visibility(argv[1], true, true);
+		return 0;
+	}
 	model1_video_test::foreground_order();
 	model1_video_test::extra_scenery();
 	model1_video_test::scenery_records();
+	model1_video_test::culled_records();
 	if (argc > 2 && std::string(argv[2]) == "--motion") {
 		model1_video_test::scenery_motion(argv[1], false);
 		model1_video_test::scenery_motion(argv[1], true);
 		model1_video_test::native_motion(argv[1]);
+		model1_video_test::car_visibility(argv[1], false);
+		model1_video_test::car_visibility(argv[1], true);
+		model1_video_test::car_visibility(argv[1], true, true);
 		return 0;
 	}
 	if (argc > 1)
@@ -300,6 +439,11 @@ int main(int argc, char **argv)
 		model1_video_test::scenery_motion(argv[1], false);
 		model1_video_test::scenery_motion(argv[1], true);
 		model1_video_test::native_motion(argv[1]);
+	}
+	if (argc > 1) {
+		model1_video_test::car_visibility(argv[1], false);
+		model1_video_test::car_visibility(argv[1], true);
+		model1_video_test::car_visibility(argv[1], true, true);
 	}
 	puts("Model 1 video tests passed");
 }

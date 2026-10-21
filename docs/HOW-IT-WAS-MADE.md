@@ -38,11 +38,22 @@ fails on the first interpreter fallback, reporting its address and frame. Missin
 `build/cov/vr/runtime_entries.txt` and included in the next generated map. Lockstep also compares CPU registers,
 battery-backed and work RAM, and rendered frames. `vr-lockstep` runs both the default Beginner script and an
 alternate Expert-course script, checking the course label as well as the track-select, starting-grid, active-race,
-and course-results transitions. The 22,000-frame runs pass without interpreter fallback, but
-`assets/games/vr/vr_map.txt` now contains the address-only candidate generated from both scripts. `make vr-native`
-builds a separate desktop executable using that map, and `make vr-native-lockstep` verifies native execution
-against the interpreter on both scenarios (with `model1lock --native`, which has no generated C++ in it). This is still experimental coverage, not broad release validation; the
-normal `make vr` target remains interpreter-based until more gameplay and race-completion paths are covered.
+and course-results transitions. Coverage also includes a Medium-course script, all four view buttons, test-menu
+entry/exit, and the Beginner second-credit race followed by attract rankings. The checkpoints use the state
+byte at `0x501138`, dispatched by the ROM at `FE1C7D`: results/game over is state `0x1c`, not attract rankings
+(`0x03`). Neither course-dependent cameras, the unrelated changing mode byte, nor a render-dependent
+polygon-count range identifies results reliably.
+`assets/games/vr/vr_map.txt` contains the address-only map used by the desktop host. Both `make vr` and
+`make vr-native` now build startup-native execution, and release packages use `vr-native`. `--interp` retains
+the interpreter option. `make vr-native-lockstep` verifies native execution against the interpreter on the
+scripted scenarios (with `model1lock --native`, which has no generated C++ in it). This is still scripted
+coverage, not broad release validation. The `qualifying` scenario covers an EASY Beginner five-lap finish
+and ranking-name entry: it selects the difficulty through the test menu, drives with wheel/pedal/shift
+inputs, confirms `SDK`, and verifies the first-place ranking's name and finishing time in battery RAM
+before returning to attract rankings. It never patches the ROM or injects a finishing race state.
+The shared script API lets this driver read the reference machine; lockstep applies the resulting controls
+identically to the interpreter and native machine. A focused ROM-backed test also checks the saved entry
+after reset and reboot. Medium/Expert qualifying finishes and default-difficulty finishes are not covered.
 
 **The rest of the board is MAME's code.** The TGP runs its own program on MAME's MB86233 core. The rasterizer, tile
 chip, sound chips (MultiPCM, the 68000 via Musashi, the YM3438 via ymfm) and the I/O board's Z80 and EEPROM follow

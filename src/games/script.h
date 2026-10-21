@@ -27,6 +27,8 @@ public:
 	virtual ~auto_play() = default;
 	// frame f's inputs (f from 1, each frame asked for once, in order)
 	virtual script_inputs frame(int f) = 0;
+	// Feedback-driven runs inspect the reference machine, but still emit controls only.
+	virtual script_inputs frame(int f, model1 &m) { return frame(f); }
 	// with checks on: after frame f has run, a message when the run is not where it should be
 	virtual std::string check(int f, model1 &m) { return {}; }
 	// with checks on: at the end, a message when a checkpoint was never reached

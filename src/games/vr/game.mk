@@ -1,12 +1,12 @@
 # Virtua Racing's build settings (the Makefile's GAME_RULES make its targets from these)
 GAMES += vr
-# the desktop build (build/bin/vr) runs on the interpreter until more of the game is covered
-vr_HOST_REC = none
+# the desktop build uses the same startup recompilation as the downloads
+vr_HOST_REC = native
 # the scripted runs model1cov records for the recompile (make vr-coverage, vr-static)
-vr_COV_SCENARIOS = default alternate
-vr_COV_FRAMES ?= 20000
-vr_LOCK_SCENARIOS = default alternate
-vr_LOCK_FRAMES ?= 22000
+vr_COV_SCENARIOS = default alternate intermediate views service qualifying
+vr_COV_FRAMES ?= 26000
+vr_LOCK_SCENARIOS = default alternate intermediate views service qualifying
+vr_LOCK_FRAMES ?= 26000
 
 # its tests (tests/games/vr)
 $(OBJ)/tests/games/vr/profile_test.o: CXXFLAGS += $(SDL_CFLAGS)

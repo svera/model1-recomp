@@ -1,6 +1,6 @@
 # Model 1 Recomp
 
-This project reimplements Sega's Model 1 arcade hardware as a native desktop runtime. The Model 1 was used by
+This project forks Mr. Finster's superb [Virtua Fighter recomp](https://github.com/mr-finster/vf1-recomp), refactoring it to support the rest of Sega's Model 1 arcade hardware games library as native desktop runtimes. The Model 1 was used by
 multiple games; this repository currently supports Virtua Fighter and has experimental Virtua Racing support.
 
 ## Games
@@ -8,7 +8,7 @@ multiple games; this repository currently supports Virtua Fighter and has experi
 | Game | Support | Documentation |
 | --- | --- | --- |
 | Virtua Fighter | Native V60 recompilation; desktop releases for macOS, Windows, and Steam Deck / Linux | [Virtua Fighter guide](src/games/vf/README.md) |
-| Virtua Racing | Interpreter build, with an experimental native-recompilation path | [Virtua Racing guide](src/games/vr/README.md) |
+| Virtua Racing | Startup native V60 recompilation; experimental game support | [Virtua Racing guide](src/games/vr/README.md) |
 
 Each game requires the player's own MAME ROM set. No game ROMs or ROM-derived program code are included.
 

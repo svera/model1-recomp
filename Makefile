@@ -207,7 +207,7 @@ IOBOARD_ZIP = $(wildcard roms/model1io.zip)
 # ---- The games ----
 # Each game's folder has a game.mk with its name (GAMES += <game>) and these settings; GAME_RULES
 # makes the rest, the same for every game:
-#   <game>_HOST_REC        gen: the desktop build links the generated C++; none: the interpreter
+#   <game>_HOST_REC        native: startup recompilation; gen: generated C++; none: interpreter
 #   <game>_COV_SCENARIOS   the scripted runs model1cov records as the recompile's hints ("default":
 #                          the game's plain run; none: only the runtime entries)
 #   <game>_COV_FRAMES      their length
@@ -256,9 +256,14 @@ $$(OBJ)/build/gen/$(1)_rec.o: build/gen/$(1)_rec.cpp
 	$$(CXX) $$(CXXFLAGS) -O1 -Isrc/rt -c $$< -o $$@
 
 # the desktop host with the game's part of it and its ROM table
+ifeq ($$($(1)_HOST_REC),native)
+$$(BIN)/$(1): $$(BIN)/$(1)-native
+	cp $$< $$@
+else
 $$(BIN)/$(1): $$(call objs,src/host/main.cpp src/host/menu.cpp src/games/$(1)/host.cpp $$(ROMSET) src/games/$(1)/romset.cpp src/host/stb_image_impl.cpp $$(CORE) $$(MACHINE) $$(SOUND) $$(RT) $$(RML_SRC)) $$(MUSASHI_OBJ) $$(Z80_OBJ) $$(CORO_OBJ) $$(if $$(filter gen,$$($(1)_HOST_REC)),$$(OBJ)/build/gen/$(1)_rec.o,$$(REC_NONE)) $$(GPU3D_OBJ)
 	@mkdir -p $$(dir $$@)
 	$$(CXX) $$(CXXFLAGS) $$^ -o $$@ $$(LDLIBS) $$(SDL_LIBS) $$(FT_LIBS) $$(GPU3D_LIBS)
+endif
 $(1): $$(BIN)/$(1) $$($(1)_LOCAL_REGIONS)
 all: $$(BIN)/$(1)
 

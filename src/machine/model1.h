@@ -81,6 +81,7 @@ public:
 	// For the games' own code (src/games): their ROM patches, tiles, characters, colours, state
 	std::vector<uint8_t> &program_rom() { return m_regions.maincpu; }
 	const std::vector<uint8_t> &polygon_rom() const { return m_regions.polygons; }
+	const std::vector<uint8_t> &coprocessor_data_rom() const { return m_regions.copro_data; }
 	const float *render_matrix() const { return m_view->translation; }
 	bool redrawing() const { return m_redrawing; }
 	bool replaying() const { return m_replaying; }
@@ -288,6 +289,9 @@ private:
 		float mat[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
 		std::vector<uint32_t> polys;
 		std::vector<game::render_object> extra;
+		std::vector<game::render_object> objects;
+		std::optional<game::record_visibility> visibility;
+		bool retained = false;
 		float light[3] = { 0, 0, 0 };                // the list's light vector (command 0xa) where this slot is
 		bool has_light = false;
 		uint32_t owner = 0;                          // (video_traits::records) 0: not known, 1: the still world, else its record
@@ -298,6 +302,7 @@ private:
 		int frame = 0;
 		uint16_t hscr = 0, vscr = 0;                 // the sky map's scroll
 		std::vector<struct slot> slots;              // matrix commands and the objects drawn with each
+		std::vector<game::record_visibility> visibility;
 		int objects = 0;
 		double move = -1, carried = 0;
 		bool still = false;
@@ -362,6 +367,7 @@ private:
 	cam_move m_cam_move[16];
 	int m_cam_move_next = 0;
 	void index_objects(logic_frame &lf);
+	void retain_culled_records(logic_frame &frame, const logic_frame &previous);
 	void record_frame();
 	bool smooth_matrix(uint32_t poly_adr, float *out);
 	void smooth_sky_shift(float &dx, float &dy) const;
@@ -529,6 +535,8 @@ private:
 	// (video_traits::records) per word of each display list, what the game drew with the matrix
 	// written there (slot::owner), and the camera as the list was written
 	std::vector<uint32_t> m_list_owner[2];
+	std::vector<game::record_visibility> m_list_visibility[2];
+	uint64_t m_list_visibility_frame[2] = { ~0ull, ~0ull };
 	std::map<uint32_t, std::vector<game::render_object>> m_list_extra[2];
 	std::array<float, 12> m_list_camera[2]{};
 	bool m_list_has_camera[2] = { false, false };
@@ -784,7 +792,7 @@ private:
 		void set_zoom(float x, float y);
 		void set_light_direction(float x, float y, float z);
 		static glm::vec3 light_vector(float x, float y, float z);
-		void set_translation_matrix(float* mat);
+		void set_translation_matrix(const float *mat);
 		void set_view_translation(float x, float y);
 
 		void project_point(point_t *p) const;

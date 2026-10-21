@@ -80,6 +80,13 @@ struct render_object
 	uint32_t texture, polygon, size;
 };
 
+struct record_visibility
+{
+	uint32_t owner;
+	std::array<float, 3> position;
+	bool culled;
+};
+
 struct gameplay_callbacks
 {
 	std::shared_ptr<gameplay_state> state;
@@ -91,6 +98,8 @@ struct gameplay_callbacks
 	std::function<void(uint16_t)> work_ram_written;
 	// Extra renderer-only objects attached to a matrix as the CPU writes it.
 	std::function<std::vector<render_object>()> matrix_objects;
+	// Snapshot active records when a relevant matrix is written, before visibility advances.
+	std::function<std::vector<record_visibility>(uint32_t)> record_visibility;
 	std::function<void()> render_begin;
 	std::function<void()> render_end;
 	std::function<object_effects(uint32_t, uint32_t, uint32_t, const float *)> object;

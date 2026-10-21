@@ -11,6 +11,58 @@
 #include <cstdlib>
 #include <cstring>
 
+static void scripted_inputs()
+{
+	const auto title = game::id{ "vr" };
+	assert(!game::make_auto_play(title, "unknown", 12345, true));
+	auto medium = game::make_auto_play(title, "intermediate", 12345, false);
+	assert(medium && medium->frame(3068).analog[0] == 0xb0);
+	assert(medium->frame(3130).analog[0] == 0xb0);
+	assert(medium->frame(3339).analog[0] == 0xb0);
+	auto views = game::make_auto_play(title, "views", 12345, false);
+	assert(views);
+	for (int view = 0; view < 4; view++) {
+		const int f = 4000 + view * 900;
+		const auto pressed = views->frame(f).pressed;
+		if (view < 3) assert(pressed[0] == uint8_t(0x20 << view));
+		else assert(pressed[1] & 0x01);
+		const auto released = views->frame(f + 6).pressed;
+		assert(!(released[0] & 0xe0) && !(released[1] & 0x01));
+	}
+	auto service = game::make_auto_play(title, "service", 12345, true);
+	assert(service && service->frame(3000).pressed[0] == 0x04);
+	assert(service->frame(3006).pressed[0] == 0);
+	assert(service->frame(6000).pressed[1] == 0x01);
+	assert(service->frame(6006).pressed[1] == 0);
+	model1::regions regions;
+	regions.title = title;
+	model1 machine(std::move(regions));
+	assert(service->check(6006, machine).empty());
+	assert(!service->finish().empty());
+	machine.nvram()[0xdf00] = 0xff;
+	assert(service->check(6007, machine).empty());
+	assert(!service->finish().empty());
+	machine.nvram()[0xdf00] = 0;
+	assert(service->check(6008, machine).empty());
+	assert(service->finish().empty());
+	auto qualifying = game::make_auto_play(title, "qualifying", 12345, true);
+	assert(qualifying && qualifying->min_frames() == 26000);
+	assert(!qualifying->finish().empty());
+	assert(qualifying->frame(3000).pressed[0] == 0x04);
+	assert(qualifying->frame(3420).pressed[0] == 0x40);
+	assert(qualifying->frame(3580).pressed[1] == 0x01);
+	assert(qualifying->frame(4560).pressed[1] == 0x01);
+	assert(qualifying->frame(6000).pressed[0] == 0x01);
+	assert(qualifying->frame(6060).pressed[0] == 0);
+	assert(qualifying->frame(6120).pressed[0] == 0x10);
+	assert((qualifying->frame(6130).analog == std::array<int, 3>{ 0x80, 0xff, 0x30 }));
+	auto unchecked = game::make_auto_play(title, "qualifying", 12345, false);
+	assert(unchecked && unchecked->min_frames() == 0 && unchecked->finish().empty());
+	assert(unchecked->frame(6130).analog == qualifying->frame(6130).analog);
+	auto compatible = game::make_auto_play(title, "views", 12345, false);
+	assert(compatible->frame(4000, machine).pressed == views->frame(4000).pressed);
+}
+
 static void language_settings(bool board)
 {
 	model1::regions regions;
@@ -266,6 +318,68 @@ static void rom_draw_distance(const char *dir, bool native)
 		native ? "native" : "interpreter", extra_quads_frames, max_extra_quads, most_extra_at);
 }
 
+static void rom_qualifying(const char *dir, bool native)
+{
+	model1 machine(load_regions(dir, game::id{ "vr" }));
+	const auto rom = machine.program_rom();
+	if (native) {
+		rec::hints map;
+		assert(map.read("assets/games/vr/vr_map.txt"));
+		rec::attach(machine.cpu(), "vr");
+		assert(rec::build_native(machine.program_rom(), map));
+		machine.run_cpu = [](int n) { rec::run(n); };
+	}
+	machine.reset();
+	auto play = game::make_auto_play(game::id{ "vr" }, "qualifying", 12345, true);
+	uint32_t record = 0, time = 0, ranking_slot = 0;
+	for (int f = 1; f <= play->min_frames(); f++) {
+		const auto inputs = play->frame(f, machine);
+		for (int c = 0; c < 3; c++) {
+			if (inputs.analog[c] >= 0) assert(machine.set_analog_input(c, uint8_t(inputs.analog[c])));
+			machine.m_inputs[c] = uint8_t(~inputs.pressed[c]);
+		}
+		machine.run_frame();
+		const auto bad = play->check(f, machine);
+		if (!bad.empty()) fprintf(stderr, "%s\n", bad.c_str());
+		assert(bad.empty());
+		if (machine.work_ram()[0x1138] == 0x1e && machine.read32(0x501910) == 3) {
+			ranking_slot = machine.read32(0x501918);
+			record = machine.read32(ranking_slot);
+			time = machine.read32(record + 4);
+		}
+	}
+	const auto bad = play->finish();
+	if (!bad.empty()) fprintf(stderr, "%s\n", bad.c_str());
+	assert(bad.empty());
+	assert(record >= 0x400000 && record <= 0x40ffe8 && time > 0);
+	assert(machine.read32(record + 0x14) == 0x004b4453);
+	assert(machine.program_rom() == rom);
+	if (native) {
+		if (rec::fallback_count())
+			fprintf(stderr, "VR qualifying fallback: %06x (%zu calls)\n", rec::first_fallback_address(), rec::fallback_count());
+		assert(rec::fallback_count() == 0);
+	}
+	const auto battery = machine.nvram();
+	const auto difficulty = machine.eeprom_words()[16];
+	machine.reset();
+	assert(machine.nvram() == battery);
+	for (int c = 0; c < 3; c++) {
+		machine.m_inputs[c] = 0xff;
+		assert(machine.set_analog_input(c, c ? 0x30 : 0x80));
+	}
+	if (native) rec::attach(machine.cpu(), "vr");
+	for (int f = 0; f < 1000; f++) machine.run_frame();
+	assert(machine.read32(ranking_slot) == record && machine.eeprom_words()[16] == difficulty);
+	assert(machine.read32(record + 4) == time && machine.read32(record + 0x14) == 0x004b4453);
+	if (native) {
+		if (rec::fallback_count())
+			fprintf(stderr, "VR qualifying fallback: %06x (%zu calls)\n", rec::first_fallback_address(), rec::fallback_count());
+		assert(rec::fallback_count() == 0);
+	}
+	printf("VR qualifying (%s): control-only finish, SDK and time %u saved in battery RAM and retained after reboot\n",
+		native ? "native" : "interpreter", time);
+}
+
 int main(int argc, char **argv)
 {
 	model1::regions regions;
@@ -280,9 +394,12 @@ int main(int argc, char **argv)
 	assert(callbacks.wide_scene(0x5020f0, false));
 	language_settings(false);
 	language_settings(true);
+	scripted_inputs();
 	scenery_lists();
 	if (argc > 2 && (std::string(argv[2]) == "--language" || std::string(argv[2]) == "--language-native"))
 		rom_language(argv[1], std::string(argv[2]) == "--language-native");
+	else if (argc > 2 && (std::string(argv[2]) == "--qualifying" || std::string(argv[2]) == "--qualifying-native"))
+		rom_qualifying(argv[1], std::string(argv[2]) == "--qualifying-native");
 	else if (argc > 1) rom_draw_distance(argv[1], argc > 2 && std::string(argv[2]) == "--native");
 	puts("VR gameplay tests passed");
 }

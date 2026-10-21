@@ -28,7 +28,8 @@ accelerates, left trigger brakes. The same bindings can be changed there; the ga
 the configured Start control.
 
 Display settings, antialiasing, sound, and saves are available from the menu. Virtua Racing
-currently runs on the Model 1 interpreter; native recompilation is not available yet.
+recompiles your ROM's V60 program to native code at startup. Use --interp to run on the
+Model 1 interpreter instead.
 
 CREDITS
 Built on MAME's work on the Model 1 (the V60 CPU, TGP, sound and video), Musashi, ymfm, sljit,
