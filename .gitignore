@@ -5,9 +5,4 @@ refs/
 *.zip
 *.bin
 *.sav
-# the site's Pages Function and the referrer collector's address (tools/games/vf/site/build.py)
-/functions/
-.refhit-url
-/tools/games/vf/site/strip/node_modules/
-/tools/games/vf/site/strip/package-lock.json
 .DS_Store

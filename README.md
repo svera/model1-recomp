@@ -62,7 +62,6 @@ make test-vf-profile test-vf-gameplay test-vr-profile test-vr-gameplay test-vr-t
 | `tools/mac`, `tools/win`, `tools/linux` | Each platform's `package.sh [game ...]`: the downloads, the same for every game |
 | `tools/release` | What the platforms share: game settings (`games.sh`), third-party sources (`deps.sh`), `LICENSES.txt` |
 | `tools/games/<game>/release` | A game's download settings (`game.sh`), READMEs and launcher |
-| `tools/games/vf/site` | Virtua Fighter's download page (`build.py` builds it into `build/site`) |
 
 ## Project notes
 

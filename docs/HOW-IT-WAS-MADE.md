@@ -155,7 +155,7 @@ launcher kept next to it); each package gets the shared `assets/ui` and `assets/
 made in Valve's Steam Runtime, so it runs on SteamOS on the Deck as well as on other current distributions. Whatever is only one game's sits under its own folders, even outside the program: VF's
 select-icon renders (`tools/games/vf/select_icons`, into `assets/games/vf/select_icons`), its hi-res skies and
 widescreen sides (`assets/games/vf/backgrounds`; the host only looks for skies, and only shows the Background filter,
-when the game's `video_traits` lists some) and its download page (`tools/games/vf/site`). Each game's `romset.cpp`
+when the game's `video_traits` lists some). Each game's `romset.cpp`
 registers its set with the shared loader too, so `tests/romset_test` finds a game's set by name. The shared video code says "scenery" and "a moving model's shadow" for what VF calls stages
 and fighters (`video_traits::scenery_polys_end` sets where a game's scenery polygons end), and the build flags are
 `M1_NATIVE` and `M1_GPU3D_METAL` / `M1_GPU3D_SDL`.
