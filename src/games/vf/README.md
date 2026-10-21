@@ -1,8 +1,11 @@
 # Virtua Fighter
 
 Virtua Fighter (Sega, 1993) is the primary title supported by this project. Its arcade NEC V60 program is
-recompiled to native code at startup, with render scales up to 6x, widescreen, and smooth motion at the display's
-refresh rate.
+recompiled to native code at startup, with render scales up to 6x, widescreen, and selectable 30, 60,
+or 120 FPS in **Display > Frame rate**. The 30 FPS arcade option disables interpolation; 60 and 120
+add interpolated pictures without changing the game's logic or sound timing.
+Arcade presentation follows every two original video ticks (approximately 29 FPS), without an
+independent 30 Hz timer dropping completed pictures between presentation slots.
 
 For shared Model 1 architecture, build requirements, and repository information, see the
 [root README](../../../README.md). For the port's implementation and validation history, see

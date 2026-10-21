@@ -36,6 +36,8 @@ struct profile
 	uint32_t camera_ram;
 	uint32_t mode_ram;
 	uint8_t test_menu_mode;
+	// The V60's average cycles per instruction (the cores charge MAME's estimate of 8 each).
+	double cpu_cycles_per_instruction = 8;
 };
 
 struct io_profile
@@ -73,6 +75,11 @@ struct object_effects
 	std::function<void(uint32_t, int, int &, int &, int &)> colour;
 };
 
+struct render_object
+{
+	uint32_t texture, polygon, size;
+};
+
 struct gameplay_callbacks
 {
 	std::shared_ptr<gameplay_state> state;
@@ -82,6 +89,8 @@ struct gameplay_callbacks
 	// An optional aligned work-RAM word to observe after the CPU writes it (mask: bytes written).
 	uint32_t work_ram_watch = 0;
 	std::function<void(uint16_t)> work_ram_written;
+	// Extra renderer-only objects attached to a matrix as the CPU writes it.
+	std::function<std::vector<render_object>()> matrix_objects;
 	std::function<void()> render_begin;
 	std::function<void()> render_end;
 	std::function<object_effects(uint32_t, uint32_t, uint32_t, const float *)> object;

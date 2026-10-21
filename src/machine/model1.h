@@ -287,6 +287,7 @@ private:
 	struct slot {
 		float mat[12] = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0 };
 		std::vector<uint32_t> polys;
+		std::vector<game::render_object> extra;
 		float light[3] = { 0, 0, 0 };                // the list's light vector (command 0xa) where this slot is
 		bool has_light = false;
 		uint32_t owner = 0;                          // (video_traits::records) 0: not known, 1: the still world, else its record
@@ -528,6 +529,7 @@ private:
 	// (video_traits::records) per word of each display list, what the game drew with the matrix
 	// written there (slot::owner), and the camera as the list was written
 	std::vector<uint32_t> m_list_owner[2];
+	std::map<uint32_t, std::vector<game::render_object>> m_list_extra[2];
 	std::array<float, 12> m_list_camera[2]{};
 	bool m_list_has_camera[2] = { false, false };
 	int m_picture_buffer = 0;                        // the display list picture_list() last chose
@@ -582,6 +584,7 @@ private:
 	struct tgp_lle_deleter { void operator()(tgp_lle *) const; };
 	std::unique_ptr<tgp_lle, tgp_lle_deleter> m_lle;
 	uint64_t m_tgp_cycles = 0;
+	double m_cpu_owed = 0;       // the fraction of an instruction-budget cycle carried to the next line
 	void lle_reset();
 	u16 lle_v60_r(uint32_t a);
 	void lle_v60_w(uint32_t a, uint16_t data, uint16_t mem_mask);
@@ -883,6 +886,7 @@ private:
 
 	void    fclip_push_quad_next(int level, quad_t& q, point_t *p1, point_t *p2, point_t *p3, point_t *p4);
 	void    fclip_push_quad(int level, quad_t& q);
+	void require_geometry_space(int points, int quads) const;
 
 	static float    min4f(float a, float b, float c, float d);
 	static float    max4f(float a, float b, float c, float d);

@@ -284,14 +284,32 @@ at `FF7C1E` selects visible cells from a 5x5 neighborhood of the camera in a 16x
 wide. At `FF7DC5` it finishes the scenery list at `501CC0`; the camera's cell and visibility mask are still in
 R21 and R22. The game's separate near-cell lists support collision and streaming and must not be enlarged.
 
-VR observes just that completed-list write through an optional shared work-RAM write callback. Extended distance
-adds the outer ring of a 7x7 neighborhood where the original boundary is visible, clips it to the course grid,
-and updates the scenery visibility bits. The original entries retain their order, and at most 49 cells fit in
-the game's 63-entry list. Geometry still goes through the game's own submission and the shared renderer's
-clipping. Arcade mode leaves the write untouched; neither mode changes VF or patches a ROM instruction.
+An earlier maximum-distance implementation expanded the CPU's list through an in-memory ROM patch,
+set all scenery visibility bits, and raised the global polygon budget. That increased emulated CPU
+work and could also change dynamic-object submissions. After an attract-mode car-position discrepancy
+was reported, this coupling was removed rather than compensating with simulation timing changes.
+
+VR still observes the completed-list write, but only remembers which cells the arcade selected.
+At the first static-scenery matrix write (`FF8500`, called from `FF8469`, return address `FF846F`),
+it reads additional static object records from the course table at `501948`. Those objects are attached
+to the matrix's display-list offset as host-only metadata, without inserting CPU commands or writing
+ROM, RAM, visibility bits or the polygon budget. All 256 cells are considered; cells outside the original
+selection are visited nearest first, without distance or directional culling.
+
+The shared renderer draws these objects with that matrix and its material/light state. Interpolated
+frames snapshot the extra objects with their matrix slot, so they use the same camera interpolation
+as the world. Additional geometry has its own depth-sort accumulator, leaving the original objects'
+inherited sort depths unchanged. Static scenery bypasses the arcade budget and command-buffer limit,
+but does not change which cars the CPU submits. Renderer geometry allocations have explicit bounds
+checks to prevent full-course geometry from overflowing the finite point/quad buffers.
 
 The desktop's Display > Draw distance choice defaults to Extended, saves the choice in VR's settings, and applies it to
-the next list without restarting. The gameplay regression exhaustively checks course-grid boundaries and masks,
+the next list without restarting. Updated regression assertions cover all 256 camera cells,
+nearest-first additional objects, unchanged ROM/RAM and Arcade budgets, and CPU/register equality
+between distance modes during real-ROM runs. These regressions and the reported tunnel scene have
+not been run automatically, at the player's request; rebuilding remains part of the requested workflow.
+
+The initial 7x7 implementation was validated with the gameplay regression, which checks boundaries and masks,
 then compares actual rendered polygon counts at matching cameras using local ROMs on the interpreter and native
 runner. In the 6,000-frame Beginner run, 2,361 matching-camera frames draw more geometry, with up to 1,589 extra
 quads; the ranking's camera can now see the distant suspension bridge that the arcade culls.
@@ -354,6 +372,41 @@ A shared EEPROM editor preserves this distinction and both the real I/O board's 
 and the stand-in board's big-endian bytes. Language edits leave the other assignments and rankings
 alone. ROM-free tests cover both layouts, checksum coverage, invalid choices and U.S. preservation;
 the local-ROM language regression checks reset persistence in interpreter and native execution.
+
+## VR's CPU speed
+
+Other cars in VR sometimes jumped sideways. Car
+positions in RAM were smooth, but the game updates cars 0-7 in one loop that ran across a video-frame
+boundary; the boundary's place drifted, so a car was sometimes updated after the 3D list was built and
+drawn one step behind its neighbours. In 3,000 attract frames car 4 changed phase 117 times. Raising
+the emulated V60's speed moved the boundary through the loop (car 5 at 1.1x, cars 6-7 at 1.25-1.33x)
+until, from 1.5x, every car kept a steady phase over 6,000 frames apart from scene cuts.
+
+MAME's V60 charges 8 cycles to every instruction, "just an average"; the 16 MHz V60 is rated at about
+3.5 MIPS. The game profile now has `cpu_cycles_per_instruction`, applied to the per-line instruction
+budget so interpreted and native runs match. VR uses 4.5 (1.78x); VF keeps 8 and runs exactly as before.
+
+## The TGP's rounding
+
+VR's attract race differed from a cabinet video: at the tunnel exit the green car (car 0) drove
+beside the blue/white one, where the cabinet's blue/white car exits alone. The camera script and its
+timing matched exactly, and the result did not depend on CPU speed (8 to 18 cycles per instruction),
+EEPROM, the analog inputs, or nudging a car mid-race. Cars 1-7 follow scripted lines; only car 0,
+driven by the player's physics, was sensitive, and to float rounding.
+
+Both VR's and VF's TGP programs execute `stmh 0x360a0007` at startup, and bits 1-2 of the mode
+register are the rounding mode (3: toward zero). MAME applied the field only to `cfxd`, the
+float-to-integer conversion. `mb86233_device::run` now sets the host rounding mode from the register
+for the TGP's float ALU and restores the host's afterwards.
+
+That was not the cause of the difference, though. At race start the game does not clear several of
+car 0's fields, so each race inherits them from the race before. The one that matters is car 0's
+rank index (record offset +0x123): the boot code clears battery RAM, the first medium-course race
+runs with 0, and the next attract race sets it to 15, so every later medium-course race differs from
+the first. SEGA AGES Virtua Racing shows the later race from its first attract loop (the green car
+close behind on the bridge, past the red car in the tunnel), with either rounding; the other video
+was from MAME, which like a fresh board shows the first. The port follows SEGA AGES: VR's gameplay
+hooks set the rank index to 15 right after boot.
 
 ## Where to look
 

@@ -71,15 +71,29 @@ static void scenery_lists()
 {
 	model1::regions regions;
 	regions.title = game::id{ "vr" };
+	regions.maincpu.resize(0x1000000, 0xff);
+	regions.polygons.resize(0x2000);
+	auto write_rom = [&](uint32_t at, uint32_t value) {
+		for (int b = 0; b < 4; b++) regions.maincpu[at + b] = uint8_t(value >> (8 * b));
+	};
+	for (int cell = 0; cell < 256; cell++) {
+		const uint32_t record = 0x9000 + uint32_t(cell) * 24;
+		write_rom(0x8000 + uint32_t(cell) * 4, record);
+		write_rom(record, 1 + uint32_t(cell));
+		write_rom(record + 4, 0x40000 + uint32_t(cell));
+		write_rom(record + 8, 10);
+		write_rom(record + 12, 0);
+	}
+	const auto original_rom = regions.maincpu;
 	model1 machine(std::move(regions));
 	auto &ram = machine.work_ram();
 	v60_bus &bus = machine;
-	machine.cpu().pc_ref() = 0xff7dc5;
-	machine.cpu().reg_ptr()[22] = (1u << 25) - 1;
+	auto callbacks = game::vr::create_gameplay(machine);
+	auto state = std::static_pointer_cast<game::vr::gameplay_state>(callbacks.state);
+	assert(machine.program_rom() == original_rom);
 	for (int center = 0; center < 256; center++) {
 		std::fill(ram.begin(), ram.end(), 0xcd);
 		std::fill_n(ram.begin() + 0x1aa0, 32, 0);
-		machine.cpu().reg_ptr()[21] = center;
 		const int cx = center & 15, cy = center >> 4;
 		int n = 0;
 		for (int dy = -2; dy <= 2; dy++)
@@ -90,40 +104,60 @@ static void scenery_lists()
 				ram[0x1cc1 + n++] = uint8_t(cell);
 				ram[0x1aa0 + cell / 8] |= uint8_t(1u << (cell % 8));
 			}
-		const std::vector<uint8_t> original(ram.begin() + 0x1cc1, ram.begin() + 0x1cc1 + n);
-		bus.write8(0x501cc0, uint8_t(n));
-		const int expected = (std::min(15, cx + 3) - std::max(0, cx - 3) + 1) *
-			(std::min(15, cy + 3) - std::max(0, cy - 3) + 1);
-		assert(ram[0x1cc0] == expected && expected <= 49);
-		assert(std::equal(original.begin(), original.end(), ram.begin() + 0x1cc1));
-		std::array<bool, 256> seen{};
-		for (int i = 0; i < expected; i++) {
-			const int cell = ram[0x1cc1 + i];
-			assert(!seen[cell]);
+		ram[0x1cc0] = uint8_t(n);
+		bus.write32(0x501948, 0x8000);
+		bus.write32(0x500100, 0xff846f);
+		machine.cpu().set_reg(31, 0x500100);
+		machine.cpu().set_reg(22, uint32_t(center));
+		machine.cpu().pc_ref() = 0xff7dc5;
+		const auto before = ram;
+		callbacks.work_ram_written(0xff);
+		assert(callbacks.matrix_objects().empty());
+		machine.cpu().pc_ref() = 0xff8500;
+		const auto objects = callbacks.matrix_objects();
+		assert(objects.size() == size_t(256 - n));
+		std::array<bool, 256> seen = state->scenery_selected;
+		int last_distance = -1;
+		for (const auto &object : objects) {
+			const int cell = int(object.polygon) - 1;
+			assert(cell >= 0 && cell < 256 && !seen[cell]);
 			seen[cell] = true;
-			assert(std::abs((cell & 15) - cx) <= 3 && std::abs((cell >> 4) - cy) <= 3);
-			assert(ram[0x1aa0 + cell / 8] & (1u << (cell % 8)));
+			assert(object.texture == 0x40000 + uint32_t(cell) && object.size == 0);
+			const int dx = (cell & 15) - cx, dy = (cell >> 4) - cy;
+			const int distance = dx * dx + dy * dy;
+			assert(distance >= last_distance);
+			last_distance = distance;
 		}
-		assert(ram[0x1d00] == 0xcd && ram[0x1c00] == 0xcd && ram[0x1c40] == 0xcd);
+		assert(std::all_of(seen.begin(), seen.end(), [](bool value) { return value; }));
+		assert(callbacks.matrix_objects().empty());
+		assert(ram == before && machine.program_rom() == original_rom);
 	}
-	machine.cpu().reg_ptr()[21] = 0x88;
-	machine.cpu().reg_ptr()[22] = 1u << 2;   // Only the middle of the far boundary is visible.
-	bus.write8(0x501cc0, 0);
-	assert(ram[0x1cc0] == 1 && ram[0x1cc1] == 0x58);
-	machine.cpu().reg_ptr()[22] = 0;
-	bus.write8(0x501cc0, 0);
-	assert(ram[0x1cc0] == 0);
-	machine.cpu().reg_ptr()[22] = (1u << 25) - 1;
-	game::vr::set_extended_draw_distance(machine, false);
-	bus.write8(0x501cc0, 1);
-	assert(ram[0x1cc0] == 1);
-	game::vr::set_extended_draw_distance(machine, true);
+	machine.cpu().pc_ref() = 0xff7dc5;
+	callbacks.work_ram_written(0xff);
+	bus.write32(0x500100, 0xffddd4);
+	machine.cpu().pc_ref() = 0xff8500;
+	assert(callbacks.matrix_objects().empty() && state->scenery_pending);
+	bus.write32(0x500100, 0xff846f);
+	assert(!callbacks.matrix_objects().empty() && !state->scenery_pending);
+	state->extended_draw_distance = false;
+	callbacks.work_ram_written(0xff);
+	assert(callbacks.matrix_objects().empty());
+	bus.write32(0x5011b0, 5000);
+	assert(bus.read32(0x5011b0) == 5000);
+	state->extended_draw_distance = true;
+	callbacks.reset();
+	assert(!state->scenery_pending);
 	machine.cpu().pc_ref() = 0;
-	bus.write8(0x501cc0, 1);
-	assert(ram[0x1cc0] == 1);
+	bus.write8(0x501cc0, 0);
+	auto machine_state = std::static_pointer_cast<game::vr::gameplay_state>(machine.game_state());
+	assert(!machine_state->scenery_pending);
 	machine.cpu().pc_ref() = 0xff7dc5;
 	bus.write8(0x501cc1, 0);
-	assert(ram[0x1cc0] == 1);   // A high-byte write is not a completed list.
+	assert(!machine_state->scenery_pending);
+	bus.write8(0x501cc0, 0);
+	assert(machine_state->scenery_pending);
+	machine.reset();
+	assert(!machine_state->scenery_pending);
 }
 
 static void rom_language(const char *dir, bool native)
@@ -187,7 +221,7 @@ static void rom_draw_distance(const char *dir, bool native)
 	extended.reset();
 	auto play = game::make_auto_play(vr, "", 12345, false);
 	assert(play);
-	int extra_quads_frames = 0, max_cells = 0, max_extra_cells = 0, most_extra_at = 0;
+	int extra_quads_frames = 0, most_extra_at = 0;
 	size_t max_extra_quads = 0;
 	for (int f = 1; f <= 6000; f++) {
 		const auto inputs = play->frame(f);
@@ -200,8 +234,9 @@ static void rom_draw_distance(const char *dir, bool native)
 		}
 		arcade.run_frame();
 		extended.run_frame();
-		max_cells = std::max(max_cells, int(extended.work_ram()[0x1cc0]));
-		max_extra_cells = std::max(max_extra_cells, int(extended.work_ram()[0x1cc0]) - int(arcade.work_ram()[0x1cc0]));
+		assert(arcade.work_ram() == extended.work_ram());
+		assert(arcade.nvram() == extended.nvram());
+		for (int r = 0; r <= 32; r++) assert(arcade.cpu().reg(r) == extended.cpu().reg(r));
 		if (!memcmp(&extended.work_ram()[0x1b00], &arcade.work_ram()[0x1b00], 48) &&
 			extended.frame_quads() > arcade.frame_quads()) {
 			extra_quads_frames++;
@@ -221,15 +256,14 @@ static void rom_draw_distance(const char *dir, bool native)
 			}
 		}
 	}
-	assert(max_extra_cells > 0 && max_cells <= 49);
 	assert(extra_quads_frames > 100 && max_extra_quads > 100);
 	if (native) {
 		if (rec::fallback_count())
 			fprintf(stderr, "VR extended draw distance fallback: %06x (%zu calls)\n", rec::first_fallback_address(), rec::fallback_count());
 		assert(rec::fallback_count() == 0);
 	}
-	printf("VR extended (%s): up to %d scenery cells, %d matching-camera frames with more polygons, up to %zu extra quads at frame %d\n",
-		native ? "native" : "interpreter", max_cells, extra_quads_frames, max_extra_quads, most_extra_at);
+	printf("VR extended (%s): unchanged CPU registers and game RAM, %d matching-camera frames with more polygons, up to %zu extra quads at frame %d\n",
+		native ? "native" : "interpreter", extra_quads_frames, max_extra_quads, most_extra_at);
 }
 
 int main(int argc, char **argv)

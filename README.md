@@ -19,6 +19,12 @@ coprocessor (TGP), polygon rasterizer, System 24 tile layers, sound board, and I
 TGP core, and much of the machine implementation are based on MAME. The SDL 3 host supplies the window, input,
 audio, saves, and menus.
 
+Menu > **Display > Frame rate** selects **30**, **60**, or **120 FPS**. The 30 FPS arcade option
+disables interpolation; 60 and 120 use interpolated pictures. The choice applies immediately and
+is saved as `fps` in each game's `settings.ini` (default: 120). Game logic and audio retain their
+original timing. The screen's refresh rate and available performance limit the visible frame rate;
+the original arcade motion updates at approximately 29 FPS on this board.
+
 The CPU renderer reproduces the arcade's 1x picture. Optional higher render scales, antialiasing, and GPU rendering
 are host-side features. On supported systems, the GPU renderer is checked against the CPU renderer and falls back
 to the CPU if it detects a difference or error.

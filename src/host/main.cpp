@@ -354,6 +354,7 @@ struct settings
 	int scale = 2, aspect = 0, volume = 100, music = 100, effects = 100, aa = 1, filter = 0;
 	int renderer3d = 2;     // the 3D's renderer: 0 the CPU, 1 the GPU, 2 Auto (whichever is quicker here)
 	int graphics = 0;   // Windows GPU driver, from the next start: Auto or Direct3D 12
+	int fps = 120;
 	std::string auto_3d;    // Auto's findings, per render scale and antialiasing ("3x1:g,2x0:c")
 	std::string roms_folder;   // where the player keeps the game's zip (vf.zip, vr.zip) (roms_folder = ...; read before the game starts, kept as written)
 	bool fullscreen = false, timings = false, arcade = false, smooth_bg = false, show_fps = false;
@@ -388,6 +389,10 @@ struct settings
 		flag("show_fps", show_fps);
 		num("renderer_3d", renderer3d, 0, 2);
 		num("graphics", graphics, 0, 1);
+		if (auto it = kv.find("fps"); it != kv.end()) {
+			if (it->second == "30" || it->second == "60" || it->second == "120") fps = atoi(it->second.c_str());
+			else fprintf(stderr, "Invalid fps '%s'; expected 30, 60 or 120 (keeping %d)\n", it->second.c_str(), fps);
+		}
 		if (auto it = kv.find("auto_3d"); it != kv.end()) auto_3d = it->second;
 		if (auto it = kv.find("roms_folder"); it != kv.end()) roms_folder = it->second;
 		for (int p = 0; p < 2; p++) ctl[p].load(kv, p, controls);
@@ -421,6 +426,7 @@ struct settings
 				"background_filter = %d\nmusic_volume = %d\neffects_volume = %d\nantialiasing = %d\nshow_fps = %d\nscreen_filter = %d\n", scale, aspect,
 				int(fullscreen), int(timings), volume, int(arcade), int(smooth_bg), music, effects, aa, int(show_fps), filter);
 		fprintf(f, "renderer_3d = %d\n", renderer3d);
+		fprintf(f, "fps = %d\n", fps);
 		if (graphics) fprintf(f, "graphics = %d\n", graphics);
 		game.save_settings(f);
 		if (!auto_3d.empty()) fprintf(f, "auto_3d = %s\n", auto_3d.c_str());
@@ -793,7 +799,7 @@ int main(int argc, char **argv)
 	auto aa_fit = [](int scale, int aa) { return std::max(1, std::min(aa, 8 / scale)); };
 	m.set_render_scale(scale * aa_fit(scale, cfg.aa));   // antialiasing: drawn larger, averaged down
 	m.set_edge_aa(cfg.aa == 0);                           // or Low: the edges smoothed
-	m.set_smooth(true);   // always: a picture for each refresh of the screen, between the arcade's 57.5 frames a second
+	m.set_smooth(cfg.fps != 30);
 	m.set_sky_filter(cfg.smooth_bg);
 	m.set_aspect(ASPECTS[aspect_i] > 0 ? ASPECTS[aspect_i] : 16.0f / 9.0f);
 	// the real I/O board's 93C46 and the stand-in's image are laid out differently
@@ -1490,11 +1496,11 @@ int main(int argc, char **argv)
 	// F9: timings in the title bar (and on stderr) every 120 frames; a frame has 17.4 ms
 	struct perf_stats { bool show = false; int frames = 0, starved = 0, held = 0, long_frame = 0, long_picture = 0, long_other = 0, ahead = 0; uint64_t emu = 0, emu_max = 0, present = 0, work = 0, shown = 0, since = SDL_GetTicksNS(); };
 	perf_stats perf{ cfg.timings || getenv("M1_PERF") != nullptr };
-	// No load governor: the render scale and antialiasing are the player's, always, and a picture is
-	// made for every refresh of the screen, whatever its rate (it lowered them, or held 60 a second,
-	// on windows it judged short: false alarms on fast machines kept them lowered, vf1-recomp #16 #18)
+	// No load governor: the render scale, antialiasing and frame rate are the player's.
 	uint64_t started_at = 0;              // (the first picture: the log's start)
-	constexpr uint64_t smooth_gap_ns = 8333333;   // (a screen's rate unknown, or hidden in tests: a picture each 1/120 s at most)
+	double picture_budget = 1;
+	bool arcade_picture_pending = false;
+	int64_t arcade_next_picture = 0;
 	double test_load_ms = 0, test_load_s = 0;
 	if (const char *tl = getenv("M1_TEST_LOAD")) sscanf(tl, "%lf:%lf", &test_load_ms, &test_load_s);
 	// The render state in use, to the log: at the start and at each change.
@@ -1505,10 +1511,10 @@ int main(int argc, char **argv)
 		float hz = 0;
 		if (const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win))) hz = dm->refresh_rate;
 		const char *rn = SDL_GetRendererName(ren);
-		fprintf(stderr, "render state (%s): %dx (drawn at %dx), antialiasing %s, %s, the 3D: %s, the 2D on the %s (%s), %s, vsync %d, screen %.2f Hz, window %d x %d\n",
+		fprintf(stderr, "render state (%s): %dx (drawn at %dx), antialiasing %s, %s, the 3D: %s, the 2D on the %s (%s), %d FPS, %s, vsync %d, screen %.2f Hz, window %d x %d\n",
 				why, cfg.scale, m.render_scale(), cfg.aa == 0 ? "Low" : aa_now() > 1 ? (aa_now() == 2 ? "2x" : "3x") : "off",
 				aspect_i ? ASPECT_NAMES[aspect_i] : "fit", renderer_name().c_str(), on_gpu() ? "GPU" : "CPU",
-				rn ? rn : "?", !game::get_video(host_game()).smooth_frames ? "whole-frame pictures" : "smooth pictures each refresh",
+				rn ? rn : "?", cfg.fps, !m.smooth() || !game::get_video(host_game()).smooth_frames ? "whole-frame pictures" : "interpolated pictures",
 				vsync, hz, pw, ph);
 	};
 
@@ -1522,6 +1528,8 @@ int main(int argc, char **argv)
 	// Reset (the menu, F3): the menu closes, a paused game unpauses, and the screen goes black at
 	// once while the boot runs unseen (a few seconds on a slow machine), not the last picture held.
 	auto reset_game = [&](bool keep_settings = true, bool force_code = false) {
+		arcade_picture_pending = false;
+		arcade_next_picture = 0;
 		if (keep_settings) game_part.keep_arcade_settings();     // (Arcade: as the service menu may have left them)
 		menu.close();
 		paused = false;
@@ -1557,7 +1565,7 @@ int main(int argc, char **argv)
 		cfg.scale = v; cfg_dirty = true;
 		m.set_render_scale(v * aa_fit(v, cfg.aa));
 		m.set_edge_aa(cfg.aa == 0);
-		m.set_smooth(true);
+		m.set_smooth(cfg.fps != 30);
 		sync.reset();                          // a new picture size: show the next frame as it is
 		auto_measure("a new scale or antialiasing");
 		make_texture(); present_shape(); redraw_if_stopped();
@@ -1622,6 +1630,22 @@ int main(int argc, char **argv)
 			"Fit the window fills any screen shape. The other shapes add black bars to keep their shape; 4:3 is the original arcade screen. (F6)",
 			[&] { return std::string(aspect_i ? ASPECT_NAMES[aspect_i] : "Fit the window"); },
 			[&](int d) { set_shape(wrap(aspect_i + d, N_ASPECTS)); } });
+		p.items.push_back({ "Frame rate",
+			"30 FPS is original arcade motion, with no interpolation. 60 and 120 FPS add interpolated pictures without changing game speed or sound. Higher rates need more power and a fast enough display.",
+			[&] { return std::to_string(cfg.fps) + (cfg.fps == 30 ? " FPS (Arcade)" : " FPS"); },
+			[&](int d) {
+				constexpr int rates[] = { 30, 60, 120 };
+				const int index = cfg.fps == 30 ? 0 : cfg.fps == 60 ? 1 : 2;
+				cfg.fps = rates[wrap(index + d, 3)];
+				cfg_dirty = true;
+				picture_budget = 1;
+				arcade_picture_pending = false;
+				arcade_next_picture = 0;
+				m.set_smooth(cfg.fps != 30);
+				sync.reset();
+				redraw_if_stopped();
+				log_state("the player's frame rate");
+			} });
 		for (menu_item &i : game_part.display_menu_items()) p.items.push_back(std::move(i));
 		if (has_skies) p.items.push_back({ "Background filter",
 			"Smooth softens the stage backgrounds so they don't look blocky when enlarged. Off keeps their original pixels. Only matters above 1x.",
@@ -1989,7 +2013,8 @@ int main(int argc, char **argv)
 									 gc.draw(parts, m.frame_w(), m.frame_h(), m.render_scale() > 1 ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST) &&
 									 (aa_now() == 1 || gc.resolve(aa_now(), shown_w(), shown_h()));
 				}
-				show_frame = show_it || show_frame;
+				if (!m.smooth()) arcade_picture_pending = arcade_picture_pending || show_it;
+				show_frame = (show_it && m.smooth() && (was_holding || sync.holding())) || show_frame;
 				// a new scene: nothing to blend from, unless both lists kept are its own (it was built
 				// after frames with no 3D, which forget the old scene's): then it moves from its first
 				// picture on, instead of standing still until a third list came
@@ -2022,6 +2047,7 @@ int main(int argc, char **argv)
 		curtain = carried_curtain;
 		carried_curtain = false;
 		bool cut_hold = false;             // this pass's picture stays on purpose (a camera cut's hold)
+		bool picture_due = false;
 		curtain_on_gpu = carried_on_gpu;
 		carried_on_gpu = false;
 		const uint64_t pass_t = SDL_GetTicksNS();
@@ -2148,7 +2174,7 @@ int main(int argc, char **argv)
 			pstate[0].start_was = pstate[1].start_was = true;
 			for (pad_state &s : pstate) s.menu_was = s.touch_was = s.sticks_was = true;
 		}
-		if (paused || menu.is_open()) restart_clock();   // (no catching up afterwards)
+		if (paused || menu.is_open()) { restart_clock(); picture_budget = 1; }   // (no catching up afterwards)
 		if (!paused && !menu.is_open()) {
 			// Run the game by its clock (frame_clock): the frames it has passed, however often the
 			// screen comes round (a 30 or 15 fps limit runs 2 or 4 frames a pass), and more at once if
@@ -2178,6 +2204,9 @@ int main(int argc, char **argv)
 					if (even_shown > 1e6) { even_real -= even_shown; even_shown = 0; }   // (kept small)
 				} else even_real = even_shown = 0;
 			}
+			picture_budget = std::min(2.0, picture_budget + dt * cfg.fps);
+			picture_due = picture_budget >= 1.0 - 1e-6;
+			if (picture_due) picture_budget = std::max(0.0, picture_budget - std::floor(picture_budget + 1e-6));
 			double rate = FRAME_HZ;
 			int low = 0;                         // frames the sound needs at once (it's nearly run dry)
 			bool sound_full = false;             // over 300 ms queued: no frames run this pass
@@ -2238,10 +2267,7 @@ int main(int argc, char **argv)
 			}
 			// smooth motion: the picture for this moment of the screen, between the last two game
 			// frames. The sound's playback is the steady clock: the newest frame minus what's still queued.
-			// At most 120 of these a second (a 144 or 240 Hz screen needn't redraw every refresh),
-			// and none while the window is minimised or hidden.
-			// The limit is a budget, not a minimum gap: a gap of 8 ms skipped about a third of a 120 Hz
-			// screen's refreshes (8.3 ms apart, give or take), so it showed 70-odd pictures, not 120.
+			// The selected frame rate caps pictures, not the game's logic or audio clock.
 			// a stage's sky scaled on its threads and done, not yet in use: a band of it to the GPU
 			if (on_gpu()) {
 				model1::gpu_image pending;
@@ -2251,15 +2277,7 @@ int main(int argc, char **argv)
 					tp.upload += SDL_GetTicksNS() - tq;
 				}
 			}
-			static double smooth_budget = 1;
-			static uint64_t budget_t = SDL_GetTicksNS();
-			{ const uint64_t bt = SDL_GetTicksNS();
-			  smooth_budget = std::min(2.0, smooth_budget + double(bt - budget_t) / double(smooth_gap_ns));
-			  budget_t = bt; }
 			const bool unseen = SDL_GetWindowFlags(win) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_OCCLUDED);
-			// (a picture every refresh of the screen, vsync its pace, whatever its rate: no limit; the
-			// budget, refilled by a clock that drifts against the screen's, skipped one now and then: a
-			// refresh's stutter. VF3's d2265b3)
 			double &screen_hz = screen_hz_now;
 			bool &vsync_on = vsync_now;
 			{ static uint64_t hz_t = 0;
@@ -2269,9 +2287,7 @@ int main(int argc, char **argv)
 				  int v = 0;
 				  vsync_on = SDL_GetRenderVSync(ren, &v) && v != 0;
 			  } }
-			const bool every_refresh = screen_hz > 0 && !hidden && vsync_on;
-			if (m.smooth() && !sync.holding() && !unseen && (due || every_refresh || smooth_budget >= 1)) {
-				smooth_budget = std::max(0.0, smooth_budget - 1);
+			if (m.smooth() && !sync.holding() && !unseen && picture_due) {
 				const double now = double(m.frame_number() - 1) + std::clamp(frame_clock - double(game_run), 0.0, 1.0);
 				const uint64_t tr = SDL_GetTicksNS();
 				const double t = std::min(now, double(m.frame_number()));
@@ -2361,6 +2377,15 @@ int main(int argc, char **argv)
 				auto_tick();
 			}
 		}
+		if (!m.smooth() && !paused && !menu.is_open()) {
+			// Arcade motion advances every two board ticks, not on a separate 30 Hz clock.
+			picture_due = game_run >= arcade_next_picture;
+			show_frame = picture_due && arcade_picture_pending && !sync.holding();
+			if (show_frame) {
+				arcade_picture_pending = false;
+				arcade_next_picture = game_run + 2 - game_run % 2;
+			}
+		}
 		const uint64_t t1 = SDL_GetTicksNS();
 		const bool show_frame_was_new = show_frame && !paused && !menu.is_open();
 		if (show_frame && !in_texture) {
@@ -2378,7 +2403,7 @@ int main(int argc, char **argv)
 			// the counter: pictures shown a second, where a picture held on purpose (a scene change
 			// held until it's whole, a camera cut's hold) counts as shown: the screen kept its pace,
 			// and counting it as missed showed a drop to 80-odd at every scene change
-			if (show_frame_was_new || (!paused && !menu.is_open() && (sync.holding() || cut_hold))) shown++;
+			if (show_frame_was_new || (picture_due && !paused && !menu.is_open() && (sync.holding() || cut_hold))) shown++;
 			static const char *cap = getenv("M1_CAPTURE");
 			static int captured = 0;
 			if (cap && show_frame_was_new && g_plan_i >= g_rec_from && g_plan_i < g_rec_to) {

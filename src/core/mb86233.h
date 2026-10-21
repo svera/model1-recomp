@@ -67,7 +67,7 @@ public:
 
 	void reset();
 	// Runs until `cycles` instructions have executed or the core stalls on a FIFO.
-	int run(int cycles) { m_icount = cycles; m_stalled = false; execute_run(); return cycles - m_icount; }
+	int run(int cycles);
 	void stall() { m_stall = true; m_stalled = true; m_icount = 0; }
 	bool stalled() const { return m_stalled; }
 	u16 pc() const { return m_pc; }
@@ -81,6 +81,7 @@ private:
 	mb86233_bus *m_bus;
 	bool m_stalled = false;
 	void execute_run();
+	int host_rounding() const;
 	int m_icount;
 
 	u32 m_st, m_a, m_b, m_d, m_p;

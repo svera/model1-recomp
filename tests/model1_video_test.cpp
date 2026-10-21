@@ -10,6 +10,39 @@
 
 struct model1_video_test
 {
+	static void extra_scenery()
+	{
+		model1::regions regions;
+		regions.title = game::id{ "vr" };
+		model1 m(std::move(regions));
+		for (bool smooth : { false, true }) {
+			m.set_smooth(smooth);
+			bool pending = true;
+			m.m_gameplay.matrix_objects = [&] {
+				if (!pending) return std::vector<game::render_object>{};
+				pending = false;
+				return std::vector<game::render_object>{ { 0x40000, 0x1234, 0 } };
+			};
+			m.list_written(0, 8);
+			assert(m.m_list_extra[0].at(8).front().polygon == 0x1234);
+			m.list_written(0, 9);
+			assert(m.m_list_extra[0].count(8) == 1 && m.m_list_extra[0].count(9) == 0);
+			model1::logic_frame frame;
+			frame.list.resize(0x8000);
+			frame.list[8] = 0xb;
+			frame.list[34] = 0xf;
+			m.m_picture_buffer = 0;
+			m.index_objects(frame);
+			assert(frame.slots.size() == 2 && frame.slots[1].extra.size() == 1);
+			assert(frame.slots[1].polys == std::vector<uint32_t>{ 0x1234 });
+			assert(frame.objects == 0);
+			m.list_written(0, 8);
+			assert(m.m_list_extra[0].empty());
+			assert(frame.slots[1].extra.front().polygon == 0x1234);
+			m.m_gameplay.matrix_objects = {};
+		}
+	}
+
 	static void scenery_records()
 	{
 		model1::regions regions;
@@ -249,6 +282,7 @@ struct model1_video_test
 int main(int argc, char **argv)
 {
 	model1_video_test::foreground_order();
+	model1_video_test::extra_scenery();
 	model1_video_test::scenery_records();
 	if (argc > 2 && std::string(argv[2]) == "--motion") {
 		model1_video_test::scenery_motion(argv[1], false);

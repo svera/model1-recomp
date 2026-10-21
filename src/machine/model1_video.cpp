@@ -3,6 +3,8 @@
 #include <mutex>
 #include "parallel.h"
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 // license:BSD-3-Clause
 // copyright-holders:Olivier Galibert
 
@@ -20,6 +22,8 @@
 enum { FRAC_SHIFT = 16 };
 enum { MOIRE = 0x01000000 };
 constexpr uint32_t MOIRE_MARK = 0x01000000;   // in a drawn pixel's unused top byte: already shaded
+constexpr int GEOMETRY_QUADS = 1000000;
+constexpr int GEOMETRY_POINTS = GEOMETRY_QUADS * 2;
 bool model1::s_moire_blend = false;
 int model1::s_mark_y1 = 1 << 30, model1::s_mark_y2 = -1;
 bool model1::s_hd_raster = false;
@@ -922,12 +926,23 @@ void model1::fclip_push_quad_next(int level, quad_t& q, point_t *p1, point_t *p2
 	fclip_push_quad(level+1, cquad);
 }
 
+void model1::require_geometry_space(int points, int quads) const
+{
+	if (m_pointpt - m_pointdb.get() + points > GEOMETRY_POINTS ||
+		m_quadpt - m_quaddb.get() + quads > GEOMETRY_QUADS) {
+		fprintf(stderr, "Model 1 renderer: geometry capacity exceeded (%td points, %td quads)\n",
+			m_pointpt - m_pointdb.get(), m_quadpt - m_quaddb.get());
+		std::abort();
+	}
+}
+
 void model1::fclip_push_quad(int level, quad_t& q)
 {
 	view_t *view = m_view.get();
 
 	if (level == 4)
 	{
+		require_geometry_space(0, 1);
 		M1_LOG(LOG_TGP, "VIDEOCQ %d", level);
 		for (int i = 0; i < 4; i++)
 			M1_LOG(LOG_TGP, " (%f, %f, %f)", q.p[i]->x, q.p[i]->y, q.p[i]->z);
@@ -966,6 +981,7 @@ void model1::fclip_push_quad(int level, quad_t& q)
 			break;
 
 	point_t* pt[4];
+	require_geometry_space(4, 0);
 	bool is_out2[4];
 	for (int j = 0; j < 4; j++)
 	{
@@ -1132,6 +1148,7 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 	if (!size)
 		size = 0xffffffff;
 
+	require_geometry_space(2, 0);
 	point_t *old_p0 = m_pointpt++;
 	point_t *old_p1 = m_pointpt++;
 
@@ -1192,6 +1209,7 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 		// is the top bit of the texture parameter index.
 		int lightmode = ((flags >> 17) & 15) | ((flags & 0x00400000) ? 0x80 : 0);
 
+		require_geometry_space(2, 0);
 		point_t *p0 = m_pointpt++;
 		point_t *p1 = m_pointpt++;
 
@@ -1400,6 +1418,7 @@ int model1::push_direct(int list_offset) {
 	//  v1      = readi(list_offset+2+2);
 	//  v2      = readi(list_offset+2+10);
 
+	require_geometry_space(2, 0);
 	point_t *old_p0 = m_pointpt++;
 	point_t *old_p1 = m_pointpt++;
 
@@ -1439,6 +1458,7 @@ int model1::push_direct(int list_offset) {
 		// list+2+4 is 0?
 		// list+2+12 is z?
 
+		require_geometry_space(2, 1);
 		point_t *p0 = m_pointpt++;
 		point_t *p1 = m_pointpt++;
 
@@ -1936,6 +1956,27 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 				}
 				m_view->set_translation_matrix(mat);
 				if (m_replaying) m_replay_slot++;
+				if (pass == RENDER_BELOW_HUD) {
+					const std::vector<game::render_object> *extra = nullptr;
+					if (m_replaying) {
+						const auto &slots = m_logic[m_replay_older ? 0 : 1].slots;
+						if (m_replay_slot >= 0 && size_t(m_replay_slot) < slots.size()) extra = &slots[m_replay_slot].extra;
+					} else {
+						const int buffer = m_display_list_current == m_display_list1 ? 1 : 0;
+						if (auto it = m_list_extra[buffer].find(list_offset); it != m_list_extra[buffer].end()) extra = &it->second;
+					}
+					float extra_z = old_z;
+					if (extra)
+						for (const auto &object : *extra) {
+							float blended[12];
+							if (m_replaying && smooth_matrix(object.polygon, blended)) m_view->set_translation_matrix(blended);
+							quad_t *first = m_quadpt;
+							push_object(object.texture, object.polygon, object.size, extra_z);
+							for (quad_t *q = first; q < m_quadpt; q++) q->obj = object.polygon;
+							m_view->set_translation_matrix(mat);
+							m_shade_from = m_shade_to = m_shade_light = nullptr;
+						}
+				}
 				list_offset += 26;
 				break;
 			}
@@ -2074,9 +2115,9 @@ void model1::video_start()
 
 	m_poly_ram = make_unique_clear<uint32_t[]>(0x400000);
 	m_tgp_ram = make_unique_clear<uint16_t[]>(0x100000-0x40000);
-	m_pointdb = std::make_unique<point_t[]>(1000000*2);
-	m_quaddb  = std::make_unique<quad_t[]>(1000000);
-	m_quadind = make_unique_clear<quad_t *[]>(1000000);
+	m_pointdb = std::make_unique<point_t[]>(GEOMETRY_POINTS);
+	m_quaddb  = std::make_unique<quad_t[]>(GEOMETRY_QUADS);
+	m_quadind = make_unique_clear<quad_t *[]>(GEOMETRY_QUADS);
 	m_overlay_stride = m_bitmap.width();   // the overlay buffers: made when first needed
 
 	m_pointpt = &m_pointdb[0];

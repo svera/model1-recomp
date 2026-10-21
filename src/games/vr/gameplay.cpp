@@ -2,42 +2,91 @@
 #include "../settings.h"
 #include "../../machine/model1.h"
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <utility>
 
 namespace game::vr {
 
 namespace {
 constexpr uint32_t TRACK_SELECT_CAMERA = 0x00502150;
-constexpr uint32_t SCENERY_COUNT = 0x1cc0, VISIBLE_CELLS = 0x1aa0;
+constexpr uint32_t SCENERY_COUNT = 0x1cc0;
 constexpr uint32_t SCENERY_READY_PC = 0xff7dc5;
+// Car 0's rank index (record 0x400d00 + 0x123). The boot code clears battery RAM and the first
+// attract race (the medium course) leaves it alone; the next attract race sets it to 15 and every
+// later medium-course race starts from that. SEGA AGES Virtua Racing shows that race from the start.
+constexpr uint32_t CAR0_RANK = 0xe23;
+constexpr uint8_t CAR0_ATTRACT_RANK = 15;
 
-void extend_scenery(model1 &machine)
+void prepare_scenery(model1 &machine, gameplay_state &state)
 {
-	auto &ram = machine.work_ram();
-	const uint32_t center = machine.cpu().reg(21), visible = machine.cpu().reg(22);
+	const auto &ram = machine.work_ram();
 	const int count = ram[SCENERY_COUNT];
-	if (center > 255 || count > 25) {
-		fprintf(stderr, "VR draw distance: invalid scenery list (cell %u, count %d)\n", center, count);
-		return;
+	if (count > 25) {
+		fprintf(stderr, "VR draw distance: invalid scenery count %d\n", count);
+		std::abort();
 	}
-	const int cx = center & 15, cy = center >> 4;
-	int n = count;
-	// FF7C1E selects cells in a 5x5 grid. Extend its visible boundary by one 128-unit
-	// cell, keeping the original near-cell lists used by collision and streaming intact.
-	for (int dy = -3; dy <= 3; dy++)
-		for (int dx = -3; dx <= 3; dx++) {
-			if (std::abs(dx) != 3 && std::abs(dy) != 3) continue;
-			const int x = cx + dx, y = cy + dy;
-			if (x < 0 || x >= 16 || y < 0 || y >= 16) continue;
-			const int parent = (std::clamp(dy, -2, 2) + 2) * 5 + std::clamp(dx, -2, 2) + 2;
-			if (!(visible & (1u << parent))) continue;
-			const int cell = y * 16 + x;
-			ram[SCENERY_COUNT + 1 + n++] = uint8_t(cell);
-			ram[VISIBLE_CELLS + cell / 8] |= uint8_t(1u << (cell % 8));
+	state.scenery_selected.fill(false);
+	for (int i = 0; i < count; i++) {
+		const int cell = ram[SCENERY_COUNT + 1 + i];
+		if (state.scenery_selected[cell]) {
+			fprintf(stderr, "VR draw distance: duplicate scenery cell %d\n", cell);
+			std::abort();
 		}
-	// At most 25 original + 24 outer cells: within the game's 63-entry list.
-	ram[SCENERY_COUNT] = uint8_t(n);
+		state.scenery_selected[cell] = true;
+	}
+	state.scenery_pending = true;
+}
+
+std::vector<render_object> scenery_objects(model1 &machine, gameplay_state &state)
+{
+	if (!state.extended_draw_distance || !state.scenery_pending || machine.cpu().pc() != 0xff8500) return {};
+	v60_bus &bus = machine;
+	if (bus.read32(machine.cpu().reg(31)) != 0xff846f) return {};
+	state.scenery_pending = false;
+	std::vector<render_object> objects;
+	const uint32_t table = bus.read32(0x501948);
+	auto read_rom = [&](uint32_t address, uint32_t bytes) {
+		if (address > 0x1000000 - bytes ||
+			!((address < 0x300000 && address + bytes <= 0x300000) || address >= 0xf80000)) {
+			fprintf(stderr, "VR draw distance: invalid scenery ROM address %08x\n", address);
+			std::abort();
+		}
+		return bus.read32(address);
+	};
+	read_rom(table, 256 * 4);
+	std::array<std::pair<int, uint8_t>, 256> cells;
+	const int center = int(machine.cpu().reg(22));
+	if (center < 0 || center > 255) {
+		fprintf(stderr, "VR draw distance: invalid anchor cell %d\n", center);
+		std::abort();
+	}
+	for (int cell = 0; cell < 256; cell++) {
+		const int dx = (cell & 15) - (center & 15), dy = (cell >> 4) - (center >> 4);
+		cells[cell] = { dx * dx + dy * dy, uint8_t(cell) };
+	}
+	std::sort(cells.begin(), cells.end());
+	for (const auto &[distance, cell] : cells) {
+		if (state.scenery_selected[cell]) continue;
+		uint32_t record = read_rom(table + uint32_t(cell) * 4, 4);
+		if (!record || record == 0xffffffff) continue;
+		for (int guard = 0; ; guard++, record += 12) {
+			if (guard == 4096) {
+				fprintf(stderr, "VR draw distance: unterminated scenery cell %d\n", cell);
+				std::abort();
+			}
+			const uint32_t polygon = read_rom(record, 4);
+			if (!polygon) break;
+			read_rom(record, 12);
+			if (polygon >= machine.polygon_rom().size() / 4) {
+				fprintf(stderr, "VR draw distance: invalid scenery polygon %08x in cell %d\n", polygon, cell);
+				std::abort();
+			}
+			objects.push_back({ bus.read32(record + 4), polygon, 0 });
+		}
+	}
+	return objects;
 }
 }
 
@@ -46,11 +95,21 @@ gameplay_callbacks create_gameplay(model1 &machine)
 	gameplay_callbacks callbacks;
 	auto state = std::make_shared<gameplay_state>();
 	callbacks.state = state;
+	callbacks.reset = [state] {
+		state->scenery_pending = false;
+		state->attract_rank_pending = true;
+	};
+	callbacks.frame_end = [&machine, state] {
+		if (!state->attract_rank_pending) return;
+		state->attract_rank_pending = false;
+		if (machine.nvram()[CAR0_RANK] == 0) machine.nvram()[CAR0_RANK] = CAR0_ATTRACT_RANK;
+	};
 	callbacks.work_ram_watch = 0x500000 + SCENERY_COUNT;
 	callbacks.work_ram_written = [&machine, state](uint16_t mask) {
-		if (state->extended_draw_distance && (mask & 0xff) && machine.cpu().pc() == SCENERY_READY_PC)
-			extend_scenery(machine);
+		if ((mask & 0xff) && machine.cpu().pc() == SCENERY_READY_PC)
+			prepare_scenery(machine, *state);
 	};
+	callbacks.matrix_objects = [&machine, state] { return scenery_objects(machine, *state); };
 	callbacks.wide_scene = [](uint32_t camera, bool) {
 		return camera != 0 && camera != TRACK_SELECT_CAMERA;
 	};
@@ -59,7 +118,9 @@ gameplay_callbacks create_gameplay(model1 &machine)
 
 void set_extended_draw_distance(model1 &machine, bool extended)
 {
-	std::static_pointer_cast<gameplay_state>(machine.game_state())->extended_draw_distance = extended;
+	auto state = std::static_pointer_cast<gameplay_state>(machine.game_state());
+	state->extended_draw_distance = extended;
+	state->scenery_pending = false;
 }
 
 int language_value(model1 &machine)

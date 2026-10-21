@@ -69,6 +69,11 @@ void model1::set_smooth(bool on)
 // it is a matrix command's (the record in the register, else the still world), and the camera.
 void model1::list_written(int buffer, uint32_t word)
 {
+	if (m_gameplay.matrix_objects) {
+		m_list_extra[buffer].erase(word);
+		auto extra = m_gameplay.matrix_objects();
+		if (!extra.empty()) m_list_extra[buffer].emplace(word, std::move(extra));
+	}
 	if (!m_smooth || !m_video->records) return;
 	const game::draw_records &r = *m_video->records;
 	std::vector<uint32_t> &owners = m_list_owner[buffer];
@@ -134,6 +139,10 @@ void model1::index_objects(logic_frame &lf)
 			memcpy(sl.light, light, sizeof light);
 			sl.has_light = has_light;
 			if (!owners.empty()) sl.owner = owners[off & 0x7fff];
+			if (auto it = m_list_extra[m_picture_buffer].find(off); it != m_list_extra[m_picture_buffer].end()) {
+				sl.extra = it->second;
+				for (const auto &object : sl.extra) sl.polys.push_back(object.polygon);
+			}
 			lf.slots.push_back(sl);
 			off += 26;
 			break;
@@ -157,11 +166,18 @@ void model1::record_frame()
 		lf.list.assign(shown, shown + 0x8000);
 		uint64_t h = 1469598103934665603ull;
 		for (uint16_t w : lf.list) h = (h ^ w) * 1099511628211ull;
-		lf.hash = h;
 		lf.frame = int(m_frame);
 		lf.hscr = m_tiles.tile_r(0x5002);
 		lf.vscr = m_tiles.tile_r(0x5006);
 		index_objects(lf);
+		for (size_t i = 0; i < lf.slots.size(); i++)
+			if (!lf.slots[i].extra.empty()) {
+				h = (h ^ i) * 1099511628211ull;
+				for (const auto &object : lf.slots[i].extra)
+					for (uint32_t value : { object.texture, object.polygon, object.size })
+						h = (h ^ value) * 1099511628211ull;
+			}
+		lf.hash = h;
 		lf.camera = m_list_camera[m_picture_buffer];
 		// (a list with nothing of a record or the world in it keeps an older list's camera)
 		lf.has_camera = m_list_has_camera[m_picture_buffer] && m_video->records

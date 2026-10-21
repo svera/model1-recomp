@@ -36,7 +36,7 @@ public:
 
 	std::vector<menu_item> display_menu_items() override
 	{
-		return { { "Draw distance", "Extended draws one more row of scenery cells beyond the arcade's range. More scenery can lower performance. Applies without restarting.",
+		return { { "Draw distance", "Extended adds distant static scenery from the full 256-cell course in the renderer, without changing arcade car logic or timing. This can substantially lower performance. Applies to the next scenery list.",
 			[this] { return extended ? "Extended" : "Arcade"; },
 			[this](int d) {
 				extended = (int(extended) + d + 2) % 2;

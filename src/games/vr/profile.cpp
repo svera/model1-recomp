@@ -5,7 +5,9 @@ namespace game::vr {
 const profile PROFILE{
 	ID, "Virtua Racing", "vr", "games/vr/vr_map.txt",
 	"run `make vr` with your roms/vr.zip, or tools/romset.py --game vr",
-	0x17f0, 0x3002, 18
+	// About 3.5 MIPS at 16 MHz. At MAME's 8 cycles the car-update loop straddles a video frame
+	// at a drifting point, so some cars are drawn a step behind and jump sideways.
+	0x17f0, 0x3002, 18, 4.5
 };
 
 const io_profile IO_PROFILE{

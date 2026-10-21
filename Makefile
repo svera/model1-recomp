@@ -173,6 +173,14 @@ $(BIN)/model1io_adc_test: tests/model1io_adc_test.cpp $(OBJ)/src/machine/model1i
 test-model1io-adc: $(BIN)/model1io_adc_test
 	$(BIN)/model1io_adc_test
 
+# The TGP core's float rounding, as its mode register selects
+$(BIN)/mb86233_test: tests/mb86233_test.cpp $(OBJ)/src/core/mb86233.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $^ -o $@
+
+test-mb86233: $(BIN)/mb86233_test
+	$(BIN)/mb86233_test
+
 # (the games come from the registry, so a game's tests (its game.mk) link the machine with every game in it)
 GAMES_LINK = $(call objs,$(CORE) $(MACHINE) $(SOUND)) $(MUSASHI_OBJ) $(Z80_OBJ)
 $(BIN)/model1_sky_test: $(OBJ)/tests/model1_sky_test.o $(GAMES_LINK)
@@ -289,4 +297,4 @@ clean:
 	rm -rf build/obj build/bin
 
 -include $(shell find $(OBJ) -name '*.d' 2>/dev/null)
-.PHONY: all clean native regions rec test-romset test-model1io-adc
+.PHONY: all clean native regions rec test-romset test-model1io-adc test-mb86233

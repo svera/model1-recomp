@@ -42,6 +42,14 @@ Open the menu with `Esc` or View / Select, then use Controls to configure Player
 steer, Up accelerates, Down brakes, and X/Z shift up/down. On a gamepad, the defaults are left stick X for
 steering, right trigger for accelerator, and left trigger for brake. Digital controls also include Start and Coin.
 
+**Display > Frame rate** offers **30 FPS (Arcade)**, **60 FPS**, and **120 FPS** (the default).
+30 disables interpolation and preserves the original arcade motion, which updates at approximately
+29 FPS with the board's timing. 60 and 120 interpolate between original pictures, without speeding up
+game logic or sound. The setting applies immediately and is saved as `fps` in VR's `settings.ini`.
+The screen's refresh rate and available performance limit the visible frame rate.
+Arcade presentation follows every two original video ticks rather than an independent 30 Hz timer,
+so completed pictures are not discarded between presentation slots.
+
 The VR I/O profile defines digital labels and bit positions, analog channel names, neutral values, and host-axis
 defaults. If `model1io.zip` is installed, the headless runner accepts analog values from 0 to 255:
 
@@ -81,23 +89,53 @@ rankings and other assignments are not reset.
 and existing U.S. settings. With extracted regions, `build/bin/vr_gameplay_test build/vr --language`
 checks that both choices survive a game reset; use `--language-native` for recompiled execution.
 
+### CPU timing
+
+VR runs its V60 at an average of 4.5 cycles per instruction (about 3.5 MIPS at 16 MHz) instead of
+MAME's estimate of 8, which VF keeps. VR updates its cars in a loop that, at 8 cycles, ran across a
+video-frame boundary at a drifting point: whether a car was updated before or after the 3D list was
+built changed from picture to picture, so other cars were drawn a step behind and jumped sideways.
+At 4.5 cycles every car keeps a steady update phase. CPU speed does not change who is where in the
+race (from 8 to 18 cycles the attract race ends the same). The rate is `cpu_cycles_per_instruction`
+in the game's profile and applies to interpreted and native runs.
+
+### TGP rounding
+
+The MB86233's mode register has a rounding field, and VR's TGP program selects round-toward-zero at
+startup. MAME used it only for float-to-integer conversion and rounded all other float arithmetic to
+nearest. The core now runs the TGP's float arithmetic in the selected mode (`make test-mb86233`).
+
+### Attract race
+
+At race start the game keeps some of each car's state from the previous race. Car 0 (the green
+car, driven by the player's physics) reads its rank index (record offset +0x123), which only the
+second attract race sets (to 15). The boot code clears battery RAM, so on a fresh board the first
+medium-course attract race runs differently from every later one. SEGA AGES Virtua Racing shows the
+later race from its first attract loop, and so does the port: right after boot, `gameplay.cpp` sets
+car 0's rank index to 15. After a played game the attract race inherits the player's state, as on
+the cabinet.
+
 ### Draw distance
 
-Menu > **Display > Draw distance** offers **Extended** (the default) and **Arcade**. Extended adds one
-128-unit row of scenery cells beyond the arcade's visible boundary: a 7x7 neighborhood instead of 5x5, still
-culled by viewing direction and bounded by the course grid. This reduces distant scenery pop-in; it is not a
-change to camera zoom. More geometry can lower performance.
+Menu > **Display > Draw distance** offers **Extended** (the default) and **Arcade**. Extended adds static
+scenery from all 256 cells of the 16x16 course, with no cell-distance or directional cutoff. Each cell
+is 128 units wide. Extra objects are attached to the original scenery matrix as renderer-only metadata,
+then drawn with the same camera, lighting and interpolation as the original scenery. Normal view-frustum
+clipping still applies. This can substantially lower performance.
+
+Extra scenery bypasses the arcade scenery polygon budget and display-list capacity without raising
+the emulated budget or adding CPU commands. The renderer retains its finite geometry capacity and
+reports an explicit error rather than writing past its buffers if that capacity is exceeded.
 
 Changes apply when the next scenery list is built, without a restart or recompilation. The choice is saved as
-`draw_distance = extended` or `draw_distance = arcade` in VR's own `settings.ini`. Arcade leaves the original
-visibility list unchanged. The near-cell lists used for collision and streaming are unchanged in both modes.
+`draw_distance = extended` or `draw_distance = arcade` in VR's own `settings.ini`. Both modes leave
+the original ROM, scenery lists, visibility bits, polygon budget, car logic and emulated CPU workload
+unchanged. The near-cell lists used for collision and streaming are also unchanged. Arcade submits
+only the original geometry. VF does not add any renderer-only scenery.
 
-The game selects scenery before it reaches the renderer. VR extends that selection at the game's completed-list
-write, rather than changing a shared far plane or affecting VF. Both interpreter and native execution use the
-same extension; no ROM patch is needed.
-
-`make test-vr-gameplay` checks all 256 cell positions, grid edges, direction masks, list capacity and the Arcade
-switch. With extracted regions, `build/bin/vr_gameplay_test build/vr` compares actual geometry against Arcade
+`make test-vr-gameplay` covers all 256 camera cells, additional static objects, nearest-first ordering,
+unchanged RAM and ROM, and the Arcade switch. With extracted regions,
+`build/bin/vr_gameplay_test build/vr` compares CPU registers and game RAM as well as actual geometry against Arcade
 over 6,000 frames; add `--native` to check recompiled execution without interpreter fallback. Set
 `VR_DISTANCE_SHOTS` to an existing directory to save comparison pictures from the matching-camera frame with
 the largest polygon increase.

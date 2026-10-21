@@ -44,10 +44,13 @@ model1::model1(regions &&r)
 void model1::reset()
 {
 	m_tgp_cycles = 0;
+	m_cpu_owed = 0;
 	for (auto &c : m_layer_cache) c.frame = ~0ull;   // a new game: nothing drawn is current
 	m_shown = m_unshown = false;                      // nor shown
 	m_tiles_updated = ~0ull;
 	m_list_written[0] = m_list_written[1] = ~0ull;
+	m_list_extra[0].clear();
+	m_list_extra[1].clear();
 	m_still_carried = -1;
 	m_cam_move_next = 0;
 	for (auto &move : m_cam_move) move = {};
@@ -104,11 +107,14 @@ void model1::run_frame()
 			// vblank starts: the display lists are scanned and swapped
 			screen_vblank_model1(1);
 		}
+		m_cpu_owed += CYCLES_PER_LINE * 8.0 / m_profile->cpu_cycles_per_instruction;
+		const int cpu_cycles = int(m_cpu_owed);
+		m_cpu_owed -= cpu_cycles;
 		if (run_cpu)
-			run_cpu(CYCLES_PER_LINE);
+			run_cpu(cpu_cycles);
 		else {
 			m_maincpu.on_exec = on_instruction;
-			m_maincpu.run(CYCLES_PER_LINE);
+			m_maincpu.run(cpu_cycles);
 		}
 		timer_tick(CYCLES_PER_LINE);
 		io_board_tick(CYCLES_PER_LINE);
