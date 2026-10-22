@@ -54,10 +54,24 @@ Arcade restores the cabinet coinage and boot screen. Its coin setting is kept as
 `settings.ini` while PC mode uses Free Play; rankings and other machine settings are not cleared.
 The ROM-backed regression is `build/bin/vr_gameplay_test build/vr --free-play` (or `--free-play-native`).
 
-The Game menu also exposes the arcade's **Car color**, **Race type** (Normal / Grand Prix),
-**Course select** (Majority vote / Beginner / Middle / Expert), and **Difficulty** (Easy / Normal / Hard /
-Hardest). These edit the same EEPROM settings as the service menu, not per-race shortcuts. Changes apply
-together when the menu closes and the game restarts, and are kept in the existing EEPROM save.
+The Game menu also exposes the arcade's **Car color**, **Course select** (Majority vote / Beginner / Medium /
+Expert), and **Difficulty** (Easy / Normal / Hard / Hardest). These edit the same EEPROM settings as the
+service menu, not per-race shortcuts. Changes apply together when the menu closes and the game restarts,
+and are kept in the existing EEPROM save. What the arcade does with them (from the program ROM, checked
+with scripted races):
+
+- **Course select**: Majority vote lets the player choose the course (linked cabinets take the course with
+  the most votes). A fixed course is raced every time; the selection screen offers only automatic or manual gears.
+- **Difficulty** sets how fast the arcade's automatic difficulty rises. In standalone play the game adds up
+  the frames played in each 0x40000 frames it runs (about 76 minutes), giving a busyness of 0-7 that the
+  setting maps to a level 0-3 (Easy at most 2). The level sets the starting time, 65/60/55/50 seconds,
+  and the checkpoint extensions. A machine that has seen little play races at level 0 on every setting.
+  Linked cabinets use the setting as the level directly.
+
+The service menu's **Race mode** (Normal / Grand Prix) is left out of the Game menu: it only changes linked
+races (the link ID set), where Grand Prix uses its own time tables with four times the starting time
+(260 seconds instead of 65). A standalone race is identical in either mode.
+
 The ROM-backed settings checks (`build/bin/vr_gameplay_test build/vr --settings`, or `--settings-native`)
 verify that the arcade reads the chosen values after reboot without restoring its defaults.
 
@@ -103,9 +117,16 @@ immediately. Picture shape also overrides a MONITOR TYPE changed in the service 
 
 The spinning SEGA logo stays in front of close-up cars during attract mode, with either draw distance
 and motion setting. `make test-model1-video` checks the shared foreground sorting; with local regions,
-`build/bin/model1_video_test build/vr` also checks actual logo visibility and unchanged pixels outside it.
+`build/bin/model1_video_test build/vr` also checks actual logo visibility and unchanged pixels outside it,
+and that smooth motion keeps the logo in place when the attract pit scene hands it from one car record to another,
+and moves the GOAL text at the end of a race smoothly as it flies in (`--goal` runs only that check).
 The same regression checks animated palms against their own scenery records rather than nearby cars;
 add `--motion` to run only the motion checks, including native/interpreter comparison.
+
+At 60/120 FPS, the camera's back-and-forth sway (the attract drive past the bridge, the in-car view) is followed
+rather than smoothed, smoothing resumes from the camera's own speed afterwards, and cars the camera follows keep the
+game's own screen path while the scenery's turn is smoothed; `--motion` checks that the lead car and the cars around
+it never move back and forth there.
 
 At 60/120 FPS, an active car rejected for one update by the arcade's coarse course-cell visibility mask
 keeps its last geometry for that update, moved by its record position and camera from that display list.

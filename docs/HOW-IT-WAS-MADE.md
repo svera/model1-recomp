@@ -79,6 +79,16 @@ menu (RmlUi), saves, the first-launch file picker, and the parts that go beyond 
   unevenly too: in a bend about 0.5 degrees a game frame, then 0.06, so the road's lines jerked sideways. Its turn is
   smoothed with an alpha-beta filter, held within a degree of the game's, and the whole 3D picture is turned about the
   eye to match, so cars and track stay together. A camera turn over 25 degrees or a jump over 8 units is a cut.
+  Some views sway the camera about 3 degrees back and forth each game frame while keeping the car still on screen
+  (the attract drive past the bridge, the in-car view); smoothing that sway moved the car instead. When the camera
+  swings back by more than a degree, it follows the game's own turn for 8 game frames, then the filter goes on from
+  the camera's speed at that point rather than the swing's (from the swing's, as the camera slowed the smoothed turn
+  ran up to a degree ahead and every car slid across the screen). Within a game frame the picture turns evenly from
+  one smoothed turn to the next: a curve through them at the filter's turn speeds sped up and slowed, now ahead, now
+  back, 15 times a second. A car the camera follows moves as unevenly in the world as the camera turns (after the
+  bridge every car does), so with the turn smoothed it went now ahead, now back on screen; each car whose direction
+  from the eye goes at least as evenly as the game drew it as turned with the smoothed camera is left as drawn (eased
+  in and out over a few game frames) while the rest of the picture is turned.
   VR's sky scroll alternates between the current position and the average of two game frames.
   The port keeps the half-pixels that average drops and calculates the next horizontal scroll from the game's RAM,
   so the sky moves between those positions at render resolution instead of extrapolating whole-pixel steps.

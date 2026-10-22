@@ -88,17 +88,24 @@ public:
 			machine_before = values;
 			machine_choices = values;
 		}
-		static const std::array<const char *, 4> names{ "Car color", "Race type", "Course select", "Difficulty" };
+		// (no Race mode: only linked cabinets use it, so a standalone race is the same either way)
+		static const std::array<const char *, 4> names{ "Car color", nullptr, "Course select", "Difficulty" };
+		static const std::array<const char *, 4> help{
+			"Your car's color in a race, including standalone play. Demo cars keep their arcade colors. Changing it restarts the game when the menu closes.",
+			nullptr,
+			"Majority vote: you choose the course before each race (linked cabinets take the most votes). A course here is raced every time, "
+			"skipping the course choice for the gears only. Changing it restarts the game when the menu closes.",
+			"How fast the arcade's automatic difficulty rises: the more the game is played, the less starting time races get, from 65 seconds down to "
+			"55 (Easy) or 50, sooner on harder settings. Changing it restarts the game when the menu closes."
+		};
 		static const std::array<std::vector<const char *>, 4> choices{ {
 			{ "Red", "Blue", "Yellow", "Green", "Black", "Pink", "Sky blue", "Orange" },
-			{ "Normal", "Grand Prix" },
-			{ "Majority vote", "Beginner", "Middle", "Expert" },
+			{},
+			{ "Majority vote", "Beginner", "Medium", "Expert" },
 			{ "Easy", "Normal", "Hard", "Hardest" }
 		} };
 		for (size_t i = 0; i < names.size(); i++)
-			items.insert(items.end() - 1, { names[i],
-				i == 0 ? "Your car's color in a race, including standalone play. Demo cars keep their arcade colors. Changing it restarts the game when the menu closes."
-					: "The arcade's saved machine setting. Changing it restarts the game when the menu closes.",
+			if (names[i]) items.insert(items.end() - 1, { names[i], help[i],
 				[this, i] {
 					const int value = machine_choices[i];
 					return std::string(value < 0 ? "-" : choices[i][value]);

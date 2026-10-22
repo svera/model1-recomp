@@ -237,6 +237,7 @@ void model1::record_frame()
 			lf.still = lf.move >= 0 && a.move > 0.01 && a.move < 0.3 && lf.move < 0.05 * a.move && !z.list.empty() && lf.frame - a.frame == a.frame - z.frame;
 			lf.carried = lf.still ? a.move : 0;
 			smooth_turn(lf, m_logic[1]);
+			follow_records(lf, m_logic[1]);
 			m_logic_prev = std::move(m_logic[0]);
 			m_logic[0] = std::move(m_logic[1]);
 			m_logic[1] = std::move(lf);
@@ -824,10 +825,13 @@ void model1::blend_slots(const logic_frame &a, const logic_frame &b, double alph
 // sideways. An alpha-beta filter: the turn expected at the last list's speed, a part of the miss
 // taken in (0.4) and a part into the speed (0.1); a steady turn comes through as it is. Never
 // over a degree from the camera's own (a car the camera follows stays near its place; the excess
-// half into the speed): what is left is evened out, the camera's sweeps are not. Afresh at a cut.
+// half into the speed): what is left is evened out, the camera's sweeps are not. Afresh at a cut,
+// and where the camera swings back over a degree.
 void model1::smooth_turn(logic_frame &lf, const logic_frame &before)
 {
 	lf.turn_age = 0;
+	lf.turn_hold = 0;
+	lf.turn_step = {};
 	if (!lf.has_camera) return;
 	const glm::mat4 cam = camera_matrix(lf.camera.data());
 	const glm::quat q = glm::quat_cast(glm::mat3(cam));
@@ -836,15 +840,32 @@ void model1::smooth_turn(logic_frame &lf, const logic_frame &before)
 	lf.turn_age = 1;
 	if (before.has_camera && before.turn_age > 0 && !camera_cut(camera_matrix(before.camera.data()), cam)) {
 		lf.turn_age = 2;
+		const glm::vec3 step = turn_vector(q * glm::inverse(glm::quat_cast(glm::mat3(camera_matrix(before.camera.data())))));
+		lf.turn_step = { step.x, step.y, step.z };
 		if (before.turn_age == 1)                    // the first move after a cut: its speed as it is
-			rate = turn_vector(q * glm::inverse(glm::quat_cast(glm::mat3(camera_matrix(before.camera.data())))));
+			rate = step;
 		else {
 			constexpr float ALPHA = 0.4f, BETA = 0.1f, LIMIT = glm::radians(1.0f);
+			constexpr int TURN_HOLD = 8;
 			const glm::vec3 last_rate(before.turn_rate[0], before.turn_rate[1], before.turn_rate[2]);
-			const glm::quat expected = turn_quat(last_rate) * glm::quat(before.turn[0], before.turn[1], before.turn[2], before.turn[3]);
+			const glm::vec3 last_step(before.turn_step[0], before.turn_step[1], before.turn_step[2]);
+			// The camera swinging back over a degree from a turn of its own (swaying about a car it keeps
+			// in place, after the bridge in the attract drive): its own turn, for a while after the last
+			// swing. Evened out, the car swung on screen, also as the swaying slowed.
+			const bool swing = glm::length(step) > LIMIT && glm::length(last_step) > LIMIT / 4 && glm::dot(step, last_step) < 0;
+			lf.turn_hold = swing ? TURN_HOLD : std::max(before.turn_hold - 1, 0);
+			if (lf.turn_hold > 0) {
+				lf.turn = { q.w, q.x, q.y, q.z };
+				lf.turn_rate = { step.x, step.y, step.z };
+				return;
+			}
+			// Out of a swing, from the camera's speed now: the swing's (as it slowed) ran the turn on
+			// ahead of the game's, and every car on screen with it.
+			const glm::vec3 from_rate = before.turn_hold > 0 ? step : last_rate;
+			const glm::quat expected = turn_quat(from_rate) * glm::quat(before.turn[0], before.turn[1], before.turn[2], before.turn[3]);
 			const glm::vec3 miss = turn_vector(q * glm::inverse(expected));
 			est = turn_quat(miss * ALPHA) * expected;
-			rate = last_rate + miss * BETA;
+			rate = from_rate + miss * BETA;
 			const glm::vec3 off = turn_vector(q * glm::inverse(est));
 			const float apart = glm::length(off);
 			if (apart > LIMIT) {
@@ -859,6 +880,42 @@ void model1::smooth_turn(logic_frame &lf, const logic_frame &before)
 	lf.turn_rate = { rate.x, rate.y, rate.z };
 }
 
+// (records) The cars the camera moves with. Turned with the world, a car the game's camera keeps
+// still (it follows the lead car, swaying a little; every car then sways with it) wobbles on
+// screen instead. Each car's way from the eye, as drawn and as turned, is measured for how
+// unevenly it moves; one moving more evenly as drawn is eased (a quarter a list) to as drawn.
+void model1::follow_records(logic_frame &lf, const logic_frame &before)
+{
+	std::vector<logic_frame::record_way> next;
+	if (lf.turn_age == 2) {
+		const glm::mat3 raw(camera_matrix(lf.camera.data()));
+		const glm::mat3 steer = glm::mat3_cast(glm::quat(lf.turn[0], lf.turn[1], lf.turn[2], lf.turn[3])) * glm::transpose(raw);
+		constexpr float KEEP = 0.75f;
+		for (const slot &s : lf.slots) {
+			if (s.owner <= 1 || s.polys.empty() || s.mat[11] <= 0) continue;
+			if (std::any_of(next.begin(), next.end(), [&](const logic_frame::record_way &r) { return r.owner == s.owner; })) continue;
+			logic_frame::record_way r;
+			for (const auto &o : before.follows)
+				if (o.owner == s.owner) r = o;
+			r.owner = s.owner;
+			const glm::vec3 at = glm::normalize(glm::vec3(s.mat[9], s.mat[10], s.mat[11]));
+			const glm::vec3 turned = lf.turn_hold > 0 ? at : steer * at;
+			if (r.seen >= 2) {
+				r.raw_err = r.raw_err * KEEP + glm::length(at - 2.0f * r.raw[0] + r.raw[1]) * (1 - KEEP);
+				r.steered_err = r.steered_err * KEEP + glm::length(turned - 2.0f * r.steered[0] + r.steered[1]) * (1 - KEEP);
+				r.weight = std::clamp(r.weight + (r.raw_err <= r.steered_err ? 0.25f : -0.25f), 0.0f, 1.0f);
+			}
+			r.raw[1] = r.raw[0];
+			r.raw[0] = at;
+			r.steered[1] = r.steered[0];
+			r.steered[0] = turned;
+			r.seen = std::min(r.seen + 1, 2);
+			next.push_back(r);
+		}
+	}
+	lf.follows = std::move(next);
+}
+
 // A game whose draw records are known (video_traits::records: Virtua Racing). Each matrix in its
 // lists came from a record (a car: its body, livery and wheels), from the still world, or from
 // neither (the logo), and the camera it was drawn with is kept. So nothing is guessed: each
@@ -866,7 +923,9 @@ void model1::smooth_turn(logic_frame &lf, const logic_frame &before)
 // a different number); the still world is where the older camera saw it; a part of a record not
 // paired (a wheel that changed model) moves with its record's first paired part; parts of no
 // record are paired by model, and so is a still-world part that sat in its place on screen while
-// the camera moved (the SEGA logo, drawn without the camera). Each is blended on screen, from the
+// the camera moved (the SEGA logo, drawn without the camera). A screen-space overlay
+// (video_traits::foreground_objects: the logo) is paired by model whichever record drew it, never
+// moves with a record and isn't turned. Each is blended on screen, from the
 // older matrix to the newer (a car the camera follows stays put; blending the camera and the car
 // apart swung it about), a part along a curve that leaves the older list at the last move's speed
 // (the game's steps are uneven). Then all of it is turned about the eye to the camera's smoothed
@@ -885,6 +944,8 @@ void model1::blend_by_records(const logic_frame &a, const logic_frame &b, double
 	const float jump = glm::length(glm::vec3(ib[3]) - glm::vec3(glm::affineInverse(ca)[3]));
 	m_blend_cut = camera_cut(ca, cb);
 	auto first = [](const slot &sl) { return sl.polys.empty() ? 0u : sl.polys[0]; };
+	const std::vector<uint32_t> &overlays = m_video->foreground_objects;
+	auto overlay = [&](const slot &sl) { return !sl.polys.empty() && std::find(overlays.begin(), overlays.end(), sl.polys[0]) != overlays.end(); };
 	using owners_t = std::unordered_map<uint32_t, std::vector<size_t>>;
 	auto by_owner = [](const logic_frame &l) {
 		owners_t o;
@@ -916,21 +977,48 @@ void model1::blend_by_records(const logic_frame &a, const logic_frame &b, double
 				if (m != models.end() && k < m->second.size()) match[i] = int(m->second[k]);
 			}
 		}
+		// a screen-space overlay (the SEGA logo): its own copy in the older list, whichever record
+		// drew it (the game hands it from one to another)
+		std::unordered_map<uint32_t, std::vector<size_t>> shown;
+		for (size_t q = 0; q < x.slots.size(); q++) if (overlay(x.slots[q])) shown[first(x.slots[q])].push_back(q);
+		std::unordered_map<uint32_t, size_t> nth_shown;
+		for (size_t i = 0; i < ny; i++) {
+			if (!overlay(y.slots[i])) continue;
+			const uint32_t f = first(y.slots[i]);
+			auto m = shown.find(f);
+			const size_t k = nth_shown[f]++;
+			match[i] = m != shown.end() && k < m->second.size() ? int(m->second[k]) : -1;
+		}
 		const glm::mat4 cx = camera(x), iy = glm::affineInverse(camera(y)), ix = glm::affineInverse(cx);
+		std::unordered_map<uint32_t, int> uses;      // each model's parts in both lists
+		for (const slot &sl : x.slots) if (!sl.polys.empty()) uses[sl.polys[0]]++;
+		for (const slot &sl : y.slots) if (!sl.polys.empty()) uses[sl.polys[0]]++;
+		for (size_t i = 0; i < ny; i++) {           // (one a record drew in the older list)
+			if (y.slots[i].owner != 1 || match[i] >= 0 || y.slots[i].polys.empty() || uses[y.slots[i].polys[0]] != 2) continue;
+			for (size_t q = 0; q < x.slots.size(); q++)
+				if (!x.slots[q].polys.empty() && x.slots[q].polys[0] == y.slots[i].polys[0]) match[i] = int(q);
+		}
 		for (size_t i = 0; i < ny; i++) {
 			const slot &sy = y.slots[i];
 			if (sy.polys.empty()) continue;
+			if (overlay(sy)) {
+				if (match[i] >= 0) view[i] = to_mat(x.slots[match[i]].mat), known[i] = 1;
+				continue;
+			}
 			if (sy.owner == 1) {
 				// the still world: where the older camera saw it. Unless its model's copy in the older
 				// list sat in its place on screen and the camera's move doesn't put it there: a part
-				// drawn without the camera (the SEGA logo, which the game draws as it draws the track)
+				// drawn without the camera (the SEGA logo, which the game draws as it draws the track).
+				// A model drawn once in each list that came nearer from its older copy than the
+				// camera's move brings it is one too, moving on screen (the GOAL flying in)
 				view[i] = cx * iy * to_mat(sy.mat);
 				known[i] = 1;
 				if (match[i] >= 0) {
 					const glm::vec3 at(sy.mat[9], sy.mat[10], sy.mat[11]);
 					const float close = 0.01f * std::max(std::fabs(at.z), 0.1f);
 					const glm::mat4 own = to_mat(x.slots[match[i]].mat);
-					if (glm::length(glm::vec3(own[3]) - at) <= close && glm::length(glm::vec3(view[i][3]) - at) > close) view[i] = own;
+					const float by_own = glm::length(glm::vec3(own[3]) - at), by_camera = glm::length(glm::vec3(view[i][3]) - at);
+					if (by_camera > close && (by_own <= close || (uses[sy.polys[0]] == 2 && by_own < 0.25f * by_camera))) view[i] = own;
 					else match[i] = -1;
 				}
 				continue;
@@ -944,11 +1032,11 @@ void model1::blend_by_records(const logic_frame &a, const logic_frame &b, double
 		for (const auto &[owner, ys] : oy) {
 			if (owner < 2) continue;
 			int lead = -1;
-			for (size_t i : ys) if (match[i] >= 0) { lead = int(i); break; }
+			for (size_t i : ys) if (match[i] >= 0 && !overlay(y.slots[i])) { lead = int(i); break; }
 			if (lead < 0) continue;
 			// the record's move in the world, taken back from the newer part's place
 			const glm::mat4 back = ix * view[lead] * glm::affineInverse(iy * to_mat(y.slots[lead].mat));
-			for (size_t i : ys) if (match[i] < 0) { view[i] = cx * back * iy * to_mat(y.slots[i].mat); known[i] = 1; }
+			for (size_t i : ys) if (match[i] < 0 && !overlay(y.slots[i])) { view[i] = cx * back * iy * to_mat(y.slots[i].mat); known[i] = 1; }
 		}
 	};
 	std::vector<int> match, match_prev;
@@ -989,20 +1077,21 @@ void model1::blend_by_records(const logic_frame &a, const logic_frame &b, double
 		m_blend_ok[i] = 1;
 	}
 	// The camera's turn smoothed (smooth_turn): everything drawn with the camera turned about the
-	// eye from the blend's turn to the smoothed one (the cars and the world alike, so nothing slides
-	// on the track); a curve through the smoothed turns at each list's turn speed. Past the newer
-	// list (before a cut), as at it.
-	if (!m_blend_cut && a.turn_age > 0 && b.turn_age == 2) {
+	// eye from the blend's turn to the smoothed one, but for the cars the camera moves with
+	// (follow_records, eased), going evenly from one list's smoothed turn to the next. Past the newer list
+	// (before a cut), as at it. (A curve through them at the filter's turn speeds, which aren't the
+	// way between them, sped up and slowed within each list: the picture swayed 15 times a second,
+	// now ahead, now back.) Between two lists that both follow the camera's own turn (smooth_turn's
+	// swing back), nothing is turned: they are the game's.
+	if (!m_blend_cut && a.turn_age > 0 && b.turn_age == 2 && !(a.turn_hold > 0 && b.turn_hold > 0)) {
 		const float t = std::min(u, 1.0f);
 		const glm::quat qa(a.turn[0], a.turn[1], a.turn[2], a.turn[3]), qb(b.turn[0], b.turn[1], b.turn[2], b.turn[3]);
-		const glm::vec3 wa(a.turn_rate[0], a.turn_rate[1], a.turn_rate[2]), wb(b.turn_rate[0], b.turn_rate[1], b.turn_rate[2]);
-		const float h10 = t * t * t - 2 * t * t + t, h01 = 3 * t * t - 2 * t * t * t, h11 = t * t * t - t * t;
-		const glm::mat3 smooth = glm::mat3_cast(turn_quat(wa * h10 + turn_vector(qb * glm::inverse(qa)) * h01 + wb * h11) * qa);
+		const glm::mat3 smooth = glm::mat3_cast(turn_quat(turn_vector(qb * glm::inverse(qa)) * t) * qa);
 		const glm::mat3 ra(ca), rb(cb);
 		const glm::mat4 steer(smooth * glm::inverse(ra + (rb - ra) * t));
 		for (size_t i = 0; i < nb; i++) {
 			const slot &sb = b.slots[i];
-			if (sb.polys.empty() || (sb.owner == 1 && match[i] >= 0)) continue;     // (drawn without the camera)
+			if (sb.polys.empty() || overlay(sb) || (sb.owner == 1 && match[i] >= 0)) continue;     // (drawn without the camera)
 			if (!m_blend_ok[i]) {                    // not blended: as it is, but turned too
 				memcpy(m_blend[i].data(), sb.mat, sizeof sb.mat);
 				memcpy(m_blend_from[i].data(), sb.mat, sizeof sb.mat);
@@ -1010,7 +1099,10 @@ void model1::blend_by_records(const logic_frame &a, const logic_frame &b, double
 				m_blend_light[i] = { sb.light[0], sb.light[1], sb.light[2], sb.has_light ? 1.0f : 0.0f };
 				m_blend_ok[i] = 1;
 			}
-			from_mat(steer * to_mat(m_blend[i].data()), m_blend[i].data());
+			float w = 0;                             // a car the camera moves with: as drawn
+			for (const auto &r : a.follows) if (r.owner == sb.owner) w += r.weight * (1 - t);
+			for (const auto &r : b.follows) if (r.owner == sb.owner) w += r.weight * t;
+			from_mat((steer * (1 - w) + glm::mat4(w)) * to_mat(m_blend[i].data()), m_blend[i].data());
 		}
 	}
 	static const bool logm = getenv("M1_LOG_SMOOTH") != nullptr;

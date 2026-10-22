@@ -100,6 +100,12 @@ END
 RC
 	$T-windres "$W/$G.rc" -O coff -o "$W/${G}_res.o"
 
+	# an object whose dependency list names another path (built in a folder since moved) isn't
+	# rebuilt when a header changes: built again, or it keeps an old layout of the classes
+	find $W/obj -name '*.d' 2>/dev/null | while read -r DEP; do
+		[ "$(head -n 1 "$DEP" | cut -d: -f1)" = "${DEP%.d}.o" ] || rm -f "$DEP" "${DEP%.d}.o"
+	done
+
 	# the game: libgcc, libstdc++ and winpthreads linked in, so SDL3.dll is the only DLL it brings
 	make -j$(sysctl -n hw.ncpu) CC=$T-gcc CXX=$T-g++ HOSTCC=cc ARCH=x86_64 TARGET_OS=windows \
 		OBJ=$W/obj BIN=$W/bin \

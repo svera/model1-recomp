@@ -41,6 +41,11 @@ for G in $GAMES; do
 	DIR=$FILE BINARY=$G TAR=${FILE}Recomp-linux.tar.gz
 	W=$D/$G
 	mkdir -p "$W"
+	# an object whose dependency list names another path (built in a folder since moved) isn't
+	# rebuilt when a header changes: built again, or it keeps an old layout of the classes
+	find $W/obj $W/obj-fast -name '*.d' 2>/dev/null | while read -r DEP; do
+		[ "$(head -n 1 "$DEP" | cut -d: -f1)" = "${DEP%.d}.o" ] || rm -f "$DEP" "${DEP%.d}.o"
+	done
 	make -j$(nproc) ARCH=x86_64 OBJ=$W/obj BIN=$W/bin "${MAKE_DEPS[@]}" $W/bin/$PROG
 
 	# the package: the player's zip goes in its roms folder (Game Mode has no file picker)

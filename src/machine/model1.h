@@ -313,6 +313,16 @@ private:
 		std::array<float, 4> turn{};
 		std::array<float, 3> turn_rate{};
 		int turn_age = 0;
+		int turn_hold = 0;                           // lists left following the camera's own turn (a swing back)
+		std::array<float, 3> turn_step{};            // the camera's own turn from the list before
+		struct record_way {                          // (records) a car's way from the eye, as drawn and as turned
+			uint32_t owner = 0;
+			glm::vec3 raw[2]{}, steered[2]{};        // the last two lists'
+			int seen = 0;
+			float raw_err = 0, steered_err = 0;      // how unevenly it moves, each way
+			float weight = 0;                        // 1: left as drawn
+		};
+		std::vector<record_way> follows;
 	};
 	logic_frame m_logic[2];                         // the game frame before, and the last
 	logic_frame m_logic_prev;                       // and the one before those (a cut's older view goes on from it)
@@ -356,6 +366,7 @@ private:
 	void sky_scroll_written(uint32_t a);
 	void blend_slots(const logic_frame &a, const logic_frame &b, double alpha);
 	void smooth_turn(logic_frame &lf, const logic_frame &before);
+	void follow_records(logic_frame &lf, const logic_frame &before);
 	void blend_by_records(const logic_frame &a, const logic_frame &b, double alpha);
 	int repair_by_camera(const logic_frame &a, const logic_frame &b, std::vector<int> &pair, const std::vector<char> &changed_run);
 	bool m_camera_cut = false;    // (repair_by_camera: the camera's move between the two lists is a cut)

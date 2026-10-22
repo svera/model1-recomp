@@ -1,10 +1,13 @@
 #include "../src/machine/model1.h"
 #include "../src/games/vr/gameplay.h"
+#include "../src/games/script.h"
 #include "../src/host/regions.h"
 #include "../src/rt/native.h"
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <cstdio>
 #include <set>
 
@@ -75,6 +78,158 @@ struct model1_video_test
 		if (native) assert(rec::fallback_count() == 0);
 		printf("VR opening car (%s, %s): all three parts retained for one update, visible in both missing-frame pictures; CPU, RAM and lists unchanged\n",
 			extended ? "extended" : "arcade", native ? "native" : "interpreter");
+	}
+
+	// A camera swaying (turning back and forth over a degree a list) about a car it keeps in place:
+	// its own turn, not evened out, for a while; a steady uneven turn still is.
+	static void swaying_camera()
+	{
+		model1::regions regions;
+		regions.title = game::id{ "vr" };
+		model1 m(std::move(regions));
+		auto at = [](float degrees) {
+			model1::logic_frame l;
+			l.has_camera = true;
+			const glm::mat3 r = glm::mat3_cast(glm::angleAxis(glm::radians(degrees), glm::vec3(0, 1, 0)));
+			for (int c = 0; c < 3; c++) for (int e = 0; e < 3; e++) l.camera[c * 3 + e] = r[c][e];
+			return l;
+		};
+		auto off = [](const model1::logic_frame &l) {
+			const glm::quat t(l.turn[0], l.turn[1], l.turn[2], l.turn[3]);
+			glm::mat3 cam;
+			for (int c = 0; c < 3; c++) for (int e = 0; e < 3; e++) cam[c][e] = l.camera[c * 3 + e];
+			return glm::degrees(glm::angle(t * glm::inverse(glm::quat_cast(cam))));
+		};
+		// uneven steady turn: smoothed (off the camera's own), never held
+		model1::logic_frame before;
+		float yaw = 0, evened = 0;
+		for (int i = 0; i < 12; i++) {
+			yaw += i % 2 ? 0.1f : 0.9f;
+			model1::logic_frame l = at(yaw);
+			m.smooth_turn(l, before);
+			assert(l.turn_hold == 0);
+			assert(off(l) <= 1.01f);
+			evened = std::max(evened, off(l));
+			before = l;
+		}
+		assert(evened > 0.1f);
+		// swaying: the camera's own turn from the first swing back, and on for 8 lists from the last
+		const float sway[] = { 2.8f, -1.6f, -1.3f, 2.6f, 1.2f, -1.7f, -2.4f, -1.8f, -1.8f, -1.8f, -1.8f, -1.8f, -1.8f, -1.8f, -1.8f };
+		const int hold[] = { 0, 8, 7, 8, 7, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0 };
+		for (size_t i = 0; i < std::size(sway); i++) {
+			yaw += sway[i];
+			model1::logic_frame l = at(yaw);
+			m.smooth_turn(l, before);
+			assert(l.turn_hold == hold[i]);
+			if (i > 0) assert(off(l) < 0.01f);      // held, then on from the camera's own speed
+			before = l;
+		}
+		// slowing after a swing: evened out from the speed it slows from, never far ahead of it
+		{
+			model1::logic_frame last = before;
+			for (int i = 0; i < 12; i++) {
+				model1::logic_frame l = at(yaw += i % 2 ? 2.4f : -2.4f);
+				m.smooth_turn(l, last);
+				last = l;
+			}
+			assert(last.turn_hold > 0);
+			float most = 0, first = -1;
+			for (float step : { -1.8f, -1.8f, -1.8f, -1.8f, -1.8f, -1.2f, -1.2f, -1.2f, -0.77f, -0.74f, -0.68f, -0.45f, -0.38f, -0.3f, -0.19f, -0.19f, -0.08f, 0.05f, -0.12f, -0.04f }) {
+				model1::logic_frame l = at(yaw += step);
+				m.smooth_turn(l, last);
+				if (l.turn_hold == 0 && first < 0) first = off(l);
+				if (l.turn_hold == 0) most = std::max(most, off(l));
+				last = l;
+			}
+			assert(last.turn_hold == 0 && first < 0.01f && most < 0.6f);   // (from the swing's speed: 0.4 at once, then 0.71)
+		}
+		// the cars: one the camera keeps in place (turning unevenly) eased, a quarter a list, to as
+		// drawn; one parked on the track turned with the world
+		{
+			model1::logic_frame last;
+			std::vector<float> kept;
+			for (int i = 0; i < 12; i++) {
+				model1::logic_frame l = at(yaw += i % 2 ? 0.1f : 0.9f);
+				glm::mat3 cam;
+				for (int c = 0; c < 3; c++) for (int e = 0; e < 3; e++) cam[c][e] = l.camera[c * 3 + e];
+				const glm::vec3 parked = cam * glm::vec3(2, 0, 10);
+				l.slots.resize(2);
+				l.slots[0].owner = 0x400d00;
+				l.slots[0].polys = { 1 };
+				l.slots[0].mat[11] = 10;
+				l.slots[1].owner = 0x401000;
+				l.slots[1].polys = { 1 };
+				for (int k = 0; k < 3; k++) l.slots[1].mat[9 + k] = parked[k];
+				m.smooth_turn(l, last);
+				m.follow_records(l, last);
+				assert(l.follows.size() == (i ? 2u : 0u));
+				if (i) {
+					kept.push_back(l.follows[0].weight);
+					assert(l.follows[1].owner == 0x401000 && l.follows[1].weight == 0);
+				}
+				last = l;
+			}
+			for (size_t i = 1; i < kept.size(); i++) assert(kept[i] == std::min(kept[i - 1] + 0.25f, 1.0f) || kept[i] == kept[i - 1]);
+			assert(kept.back() == 1);
+		}
+		// a start from still: not a swing back
+		before = model1::logic_frame{};
+		for (float step : { 0.0f, 0.05f, -1.2f }) {
+			yaw += step;
+			model1::logic_frame l = at(yaw);
+			m.smooth_turn(l, before);
+			assert(l.turn_hold == 0);
+			before = l;
+		}
+	}
+
+	// The attract drive past the bridge, the camera turning unevenly, then swaying about the lead car
+	// and slowing: on screen, the cars move on evenly as the game has them, never back and forth.
+	static void swaying_car(const char *dir)
+	{
+		model1 m(load_regions(dir, game::id{ "vr" }));
+		game::vr::set_extended_draw_distance(m, true);
+		m.set_smooth(true);
+		m.set_aspect(16.0f / 9);
+		m.reset();
+		const uint32_t cars[] = { 0x400d00, 0x401c00, 0x401980 };   // the lead car, one behind, one close by
+		std::vector<float> xs[3];
+		int held = 0, followed = 0;
+		for (int f = 1; f <= 1578; f++) {
+			m.run_frame();
+			if (f < 1440) continue;
+			const auto &b = m.m_logic[1];
+			held += b.turn_hold > 0;
+			for (const auto &r : b.follows) followed += r.owner == cars[0] && r.weight == 1;
+			for (double fraction : { 0.0, 0.5 }) {
+				m.render_smooth(double(m.frame_number() - 1) + fraction);
+				for (int c = 0; c < 3; c++)
+					for (size_t i = 0; i < b.slots.size(); i++)
+						if (b.slots[i].owner == cars[c] && !b.slots[i].polys.empty()) {
+							assert(i < m.m_blend_ok.size() && m.m_blend_ok[i]);
+							const float *x = m.m_blend[i].data();
+							assert(x[11] > 1);
+							if (c == 0 || f >= 1530) xs[c].push_back(x[9] / x[11]);
+							break;
+						}
+			}
+		}
+		assert(held > 10 && followed > 30 && xs[0].size() == 278 && xs[1].size() == 98 && xs[2].size() == 98);
+		// the lead car right to 0.32 of the depth and back to 0.23; the others, out of the swing, as the
+		// game has them (the turn smoothed against them, back and forth: up to 0.0016, 0.0016, 0.0077)
+		const float most_allowed[] = { 0.0005f, 0.001f, 0.0025f };
+		for (int c = 0; c < 3; c++) {
+			int turns = 0;
+			float most = 0;
+			for (size_t i = 2; i < xs[c].size(); i++) {
+				const float was = xs[c][i - 1] - xs[c][i - 2], now = xs[c][i] - xs[c][i - 1];
+				most = std::max(most, std::fabs(now - was));
+				turns += was * now < 0;
+			}
+			printf("VR swaying camera: car %x moves on evenly (%zu pictures, speed change up to %.5f, %d turns)\n", cars[c], xs[c].size(), most, turns);
+			assert(most < most_allowed[c] && turns <= 1);
+		}
+		printf("VR swaying camera: %d lists the camera's own turn, %d the lead car as drawn\n", held, followed);
 	}
 
 	static void culled_records()
@@ -339,6 +494,85 @@ struct model1_video_test
 		printf("VR native palm motion: %d 2x widescreen pictures identical, zero fallback\n", pictures);
 	}
 
+	// GOAL at the end of a race flies in on screen, handed from the player's car record to the still
+	// world: smoothed, it goes between its own two places (it used to be put where the camera's move
+	// took the world, far off, flashing small between the game's pictures)
+	static void goal_fly_in(const char *dir)
+	{
+		model1 m(load_regions(dir, game::id{ "vr" }));
+		m.set_smooth(true);
+		m.set_aspect(16.0f / 9);
+		m.reset();
+		auto play = game::make_auto_play(game::id{ "vr" }, "qualifying", 12345, false);
+		assert(play);
+		size_t checked = 0, handoffs = 0;
+		for (int f = 1; f <= 20100; f++) {
+			const auto in = play->frame(f, m);
+			for (int c = 0; c < 3; c++) {
+				if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
+				m.m_inputs[c] = uint8_t(~in.pressed[c]);
+			}
+			m.run_frame();
+			if (f < 19900) continue;
+			for (double fraction : { .25, .75 }) {
+				m.render_smooth(double(m.frame_number()) - fraction);
+				const auto &a = m.m_logic[0], &b = m.m_logic[1];
+				auto goal = [](const auto &s) { return !s.polys.empty() && s.polys[0] == 0x101777; };
+				auto older = std::find_if(a.slots.begin(), a.slots.end(), goal);
+				if (older == a.slots.end() || m.m_blend_cut) continue;
+				for (size_t i = 0; i < b.slots.size(); i++) {
+					if (!goal(b.slots[i]) || !m.m_blend_ok[i]) continue;
+					if (older->owner != b.slots[i].owner) handoffs++;
+					const float eps = 1e-3f * std::max(std::fabs(b.slots[i].mat[11]), 1.0f);
+					for (int k = 9; k < 12; k++) {
+						const float lo = std::min(older->mat[k], b.slots[i].mat[k]), hi = std::max(older->mat[k], b.slots[i].mat[k]);
+						if (m.m_blend[i][k] < lo - eps || m.m_blend[i][k] > hi + eps)
+							fprintf(stderr, "VR GOAL off its way: frame %d, %d: %f not in %f..%f\n", b.frame, k, m.m_blend[i][k], lo, hi);
+						assert(m.m_blend[i][k] >= lo - eps && m.m_blend[i][k] <= hi + eps);
+					}
+					checked++;
+				}
+			}
+		}
+		assert(checked > 100 && handoffs > 0);
+		printf("VR GOAL flying in: %zu smoothed pictures between the game's (%zu handoffs)\n", checked, handoffs);
+	}
+
+	// The attract pit scene hands the SEGA logo from one car record to another: smoothed, it stays
+	// between its two places on screen (it used to move with the new record's car and jump back).
+	static void logo_handoff(const char *dir)
+	{
+		model1 m(load_regions(dir, game::id{ "vr" }));
+		m.set_smooth(true);
+		m.set_aspect(16.0f / 9);
+		m.reset();
+		size_t checked = 0, handoffs = 0;
+		for (int f = 1; f <= 2800; f++) {
+			m.run_frame();
+			if (f < 2600) continue;
+			for (double fraction : { .25, .75 }) {
+				m.render_smooth(double(m.frame_number()) - fraction);
+				const auto &a = m.m_logic[0], &b = m.m_logic[1];
+				for (size_t i = 0; i < b.slots.size(); i++) {
+					if (b.slots[i].polys.empty() || b.slots[i].polys[0] != 0x1031c7 || !m.m_blend_ok[i]) continue;
+					auto older = std::find_if(a.slots.begin(), a.slots.end(), [](const auto &s) { return !s.polys.empty() && s.polys[0] == 0x1031c7; });
+					if (older == a.slots.end()) continue;
+					if (older->owner != b.slots[i].owner) handoffs++;
+					const float eps = 1e-3f * std::max(std::fabs(b.slots[i].mat[11]), 1.0f);
+					for (int k = 9; k < 12; k++) {
+						const float lo = std::min(older->mat[k], b.slots[i].mat[k]), hi = std::max(older->mat[k], b.slots[i].mat[k]);
+						if (m.m_blend[i][k] < lo - eps || m.m_blend[i][k] > hi + eps)
+							fprintf(stderr, "VR SEGA logo off its way: frame %d, %d: %f not in %f..%f\n", b.frame, k, m.m_blend[i][k], lo, hi);
+						assert(m.m_blend[i][k] >= lo - eps && m.m_blend[i][k] <= hi + eps);
+					}
+					checked++;
+				}
+			}
+		}
+		assert(checked > 100 && handoffs > 0);
+		printf("VR SEGA logo handed between records: %zu smoothed pictures in place (%zu handoffs)\n", checked, handoffs);
+	}
+
 	static void logo(const char *dir, bool smooth, bool extended, int scale = 1, float aspect = 4.0f / 3)
 	{
 		model1 m(load_regions(dir, game::id{ "vr" }));
@@ -420,7 +654,13 @@ int main(int argc, char **argv)
 	model1_video_test::extra_scenery();
 	model1_video_test::scenery_records();
 	model1_video_test::culled_records();
+	model1_video_test::swaying_camera();
+	if (argc > 2 && std::string(argv[2]) == "--goal") {
+		model1_video_test::goal_fly_in(argv[1]);
+		return 0;
+	}
 	if (argc > 2 && std::string(argv[2]) == "--motion") {
+		model1_video_test::swaying_car(argv[1]);
 		model1_video_test::scenery_motion(argv[1], false);
 		model1_video_test::scenery_motion(argv[1], true);
 		model1_video_test::native_motion(argv[1]);
@@ -434,6 +674,8 @@ int main(int argc, char **argv)
 			for (bool extended : { false, true })
 				model1_video_test::logo(argv[1], smooth, extended);
 	if (argc > 1) {
+		model1_video_test::logo_handoff(argv[1]);
+		model1_video_test::goal_fly_in(argv[1]);
 		model1_video_test::logo(argv[1], true, true, 2, 16.0f / 9);
 		model1_video_test::logo(argv[1], false, false, 2);
 		model1_video_test::scenery_motion(argv[1], false);
@@ -441,6 +683,7 @@ int main(int argc, char **argv)
 		model1_video_test::native_motion(argv[1]);
 	}
 	if (argc > 1) {
+		model1_video_test::swaying_car(argv[1]);
 		model1_video_test::car_visibility(argv[1], false);
 		model1_video_test::car_visibility(argv[1], true);
 		model1_video_test::car_visibility(argv[1], true, true);

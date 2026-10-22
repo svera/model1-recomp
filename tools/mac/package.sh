@@ -46,6 +46,11 @@ for G in $GAMES; do
 	for A in arm64 x86_64; do
 		mkdir -p $W/$A/bin
 		cp -p build/bin/m68kmake $W/$A/bin/m68kmake
+		# an object whose dependency list names another path (built in a folder since moved) isn't
+		# rebuilt when a header changes: built again, or it keeps an old layout of the classes
+		find $W/$A/obj -name '*.d' 2>/dev/null | while read -r DEP; do
+			[ "$(head -n 1 "$DEP" | cut -d: -f1)" = "${DEP%.d}.o" ] || rm -f "$DEP" "${DEP%.d}.o"
+		done
 		make -s -j10 ARCH=$A OBJ=$W/$A/obj BIN=$W/$A/bin \
 			CC="clang -arch $A -mmacosx-version-min=11.0" CXX="clang++ -arch $A -mmacosx-version-min=11.0" \
 			SDL_CFLAGS="-I$L/include" SDL_LIBS="$L/lib/libSDL3.a $FW -liconv" \
