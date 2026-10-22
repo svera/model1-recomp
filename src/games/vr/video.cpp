@@ -12,7 +12,11 @@ namespace game::vr {
 // lie at 400D00 on, 0x280 apart; non-RAM owners are the still world (the track, R19 pointing in ROM; the SEGA logo too, which is drawn
 // without the camera: blend_by_records tells it by its place). The camera it drew with is at 501B00. No scenery split for the shadow fix, no hi-res skies.
 const video_traits VIDEO{ .smooth_frames = true,
+	.pin_hud_edges = true,
 	.foreground_objects = { 0x1031c7 },   // the screen-space SEGA logo, also in close-up car views
+	.right_edge_objects = { 0x1031c7 },
+	.edge_views = { { -232, 134, -1 }, { 149, 12, 1 } },   // position pointer; circuit map and its cars
+	.hud_tile_groups = { { 0x1180, 0x11bc } },   // position gauge, beside the large GO! tiles
 	// FFE3C6/FFE444 average these whole-pixel scrolls on even video frames; odd frames
 	// use the current pair directly. Keep the half-pixels lost by the tile-register writes.
 	.sky_scroll = sky_camera{ 0x501408, 0x50140a, 0x501418, 0x50141a, 0x500501, sky_camera::format::tile_pair, 0x501420 },

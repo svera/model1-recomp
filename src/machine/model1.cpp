@@ -534,6 +534,7 @@ model1::layer_cache &model1::cached_layer(int layer, int flags)
 		if (!m_layers_together) m_tiles.m_ox = m_ext;     // (else set for them all)
 		m_tiles.draw(c.px, c.px.cliprect(), layer, 0, flags);
 		if (!m_layers_together) m_tiles.m_ox = 0;
+		pin_hud_tiles(c.px, layer);
 		c.x0.assign(SCREEN_H, 0);
 		c.x1.assign(SCREEN_H, 0);
 		for (int y = 0; y < SCREEN_H; y++) {
@@ -547,6 +548,96 @@ model1::layer_cache &model1::cached_layer(int layer, int flags)
 		c.frame = m_frame; c.flags = flags; c.ext = m_ext; c.gen++;
 	}
 	return c;
+}
+
+bool model1::hud_edge_pinning_active() const
+{
+	if (!m_video || !m_video->pin_hud_edges || !m_ext || !m_wide_frame) return false;
+	const uint8_t mode = m_ram_b[0x1138];
+	return mode == 0x03 || mode == 0x07 || mode == 0x12 || mode == 0x14;
+}
+
+void model1::pin_hud_tiles(bitmap_rgb32 &pixels, int layer) const
+{
+	if (layer != 1 || !hud_edge_pinning_active()) return;
+
+	constexpr uint32_t KEY = 0xff000000;
+	constexpr int COLS = SCREEN_W / 8, ROWS = SCREEN_H / 8;
+	// Attract's bottom notices are HUD; its ranking board and central prompts are not.
+	const uint8_t mode = m_ram_b[0x1138];
+	const int first_row = mode == 0x03 || mode == 0x07 ? 43 : 0;
+	std::array<bool, COLS * ROWS> occupied{};
+	std::array<size_t, COLS * ROWS> artwork{};
+	const uint16_t hscroll = m_tiles.tile_r(0x5000), vscroll = m_tiles.tile_r(0x5004);
+	for (int cy = first_row; cy < ROWS; cy++)
+		for (int cx = 0; cx < COLS; cx++) {
+			const int scroll = hscroll & 0x8000 ? m_tiles.tile_r(0x4000 + cy * 8) : hscroll;
+			const int x = (cx * 8 - scroll) & 0x1ff, y = (cy * 8 + vscroll) & 0x1ff;
+			const uint32_t code = m_tiles.tile_code(m_tiles.tile_r((y / 8) * 64 + x / 8));
+			for (size_t i = 0; i < m_video->hud_tile_groups.size(); i++) {
+				const auto &range = m_video->hud_tile_groups[i];
+				if (code >= range.first && code <= range.last) artwork[cy * COLS + cx] = i + 1;
+			}
+		}
+	for (int y = first_row * 8; y < SCREEN_H; y++)
+		for (int x = 0; x < SCREEN_W; x++)
+			if (pixels.pix(y, m_ext + x) != KEY) occupied[(y / 8) * COLS + x / 8] = true;
+	const std::vector<uint32_t> source(pixels.data(), pixels.data() + size_t(pixels.width()) * pixels.height());
+	for (int cell = 0; cell < COLS * ROWS; cell++) {
+		if (!occupied[cell]) continue;
+		std::vector<int> group{ cell };
+		occupied[cell] = false;
+		int left = SCREEN_W, right = 0;
+		for (size_t i = 0; i < group.size(); i++) {
+			const int cx = group[i] % COLS, cy = group[i] / COLS;
+			left = std::min(left, cx * 8);
+			right = std::max(right, cx * 8 + 7);
+			// Join letters and nearby labels before choosing one anchor for the whole graphic.
+			for (int y = std::max(first_row, cy - 2); y <= std::min(ROWS - 1, cy + 2); y++)
+				for (int x = std::max(0, cx - 2); x <= std::min(COLS - 1, cx + 2); x++) {
+					const int neighbor = y * COLS + x;
+					if (!occupied[neighbor] || artwork[neighbor] != artwork[cell]) continue;
+					occupied[neighbor] = false;
+					group.push_back(neighbor);
+				}
+		}
+		const int offset = int(hud_edge_offset(left, right));
+		if (!offset) continue;
+		for (int part : group)
+			for (int y = (part / COLS) * 8; y < (part / COLS + 1) * 8; y++)
+				for (int x = (part % COLS) * 8; x < (part % COLS + 1) * 8; x++) {
+					const uint32_t value = source[size_t(y) * pixels.width() + m_ext + x];
+					if (value != KEY) pixels.pix(y, m_ext + x) = KEY;
+				}
+		for (int part : group)
+			for (int y = (part / COLS) * 8; y < (part / COLS + 1) * 8; y++)
+				for (int x = (part % COLS) * 8; x < (part % COLS + 1) * 8; x++) {
+					const uint32_t value = source[size_t(y) * pixels.width() + m_ext + x];
+					if (value != KEY) pixels.pix(y, m_ext + x + offset) = value;
+				}
+	}
+}
+
+float model1::hud_edge_offset(float left, float right) const
+{
+	if (!hud_edge_pinning_active()) return 0;
+	if (right < SCREEN_W / 2.0f - 32) return -float(m_ext);
+	if (left > SCREEN_W / 2.0f + 32) return float(m_ext);
+	return 0;
+}
+
+float model1::hud_view_offset(float x, float y) const
+{
+	if (hud_edge_pinning_active())
+		for (const auto &view : m_video->edge_views)
+			if (x == view.x && y == view.y) return float(view.edge * m_ext);
+	return 0;
+}
+
+void model1::pin_hud_point(point_t *point, float offset) const
+{
+	point->fx += offset * m_view->scale;
+	point->s.x = int32_t(point->fx);
 }
 
 // This frame's layers but the sky, each on a thread of its own (they don't depend on one another).
@@ -607,8 +698,8 @@ void model1::draw_tiles(bitmap_rgb32 &bitmap, const rectangle &cliprect, int lay
 		tmp = &c.px; rx0 = c.x0.data(); rx1 = c.x1.data();
 	}
 	// Widescreen: the opaque layers are the game's backdrop (VF's sky), which only holds the
-	// visible part of its panorama; stretch it across the width. The rest (text, HUD) stays in
-	// the middle 4:3.
+	// visible part of its panorama; stretch it across the width. Other layers retain their scale;
+	// the game's edge-anchored HUD has already been positioned in cached_layer.
 	const bool stretch = m_ext && m_wide_frame && (flags & segas24_tile::DRAW_OPAQUE);
 	const int s = m_scale;
 	const int out_w = bitmap.width();
@@ -699,11 +790,6 @@ void model1::screen_update(bitmap_rgb32 &bitmap, const rectangle &cliprect)
 		m_tiles_updated = m_frame;
 		m_work.tiles_ns += trace_ns() - t0;
 	}
-	{
-		const uint64_t t0 = trace_ns();
-		prepare_layers();
-		m_work.layers_ns += trace_ns() - t0;
-	}
 	if (m_parts) parts_begin(bitmap);                // the GPU fills it, and the 3D goes over nothing
 	else { bitmap.fill(m_pens[0], cliprect); m_bitmap_whole = true; }
 	static const bool log_scroll = getenv("M1_LOG_SCROLL") != nullptr;
@@ -743,6 +829,11 @@ void model1::screen_update(bitmap_rgb32 &bitmap, const rectangle &cliprect)
 		last = backdrop;
 	}
 	m_screen_now = m_wide_frame ? nullptr : known;
+	{
+		const uint64_t t0 = trace_ns();
+		prepare_layers();
+		m_work.layers_ns += trace_ns() - t0;
+	}
 	draw_tiles(bitmap, cliprect, 6, segas24_tile::DRAW_OPAQUE);
 	draw_tiles(bitmap, cliprect, 4, segas24_tile::DRAW_OPAQUE);
 	if (m_screen_now && m_parts) {

@@ -162,10 +162,25 @@ struct draw_records
 	uint32_t camera;
 };
 
+struct hud_view
+{
+	float x, y;
+	int edge;                       // -1: left, +1: right
+};
+
+struct hud_tile_range
+{
+	uint16_t first, last;
+};
+
 struct video_traits
 {
 	bool smooth_frames = false;      // the 3D blended between game frames (a 30 Hz game's)
+	bool pin_hud_edges = false;      // move off-center, non-full-screen HUD graphics into widescreen sides
 	std::vector<uint32_t> foreground_objects;   // screen-space 3D overlays, sorted after world geometry
+	std::vector<uint32_t> right_edge_objects;   // whole screen-space models anchored to the right edge
+	std::vector<hud_view> edge_views;           // HUD projection translations, separate from the world camera
+	std::vector<hud_tile_range> hud_tile_groups; // artwork kept separate from nearby centered prompts
 	// polygon ROM addresses below this are the scenery a moving model's shadow falls on, which
 	// above 1x has its shadows kept off the models (0: no such split, shadows drawn as the arcade)
 	uint32_t scenery_polys_end = 0;

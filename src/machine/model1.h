@@ -65,7 +65,7 @@ public:
 	// Renders the 3D at `scale` times the arcade's 496x384 (1 = the arcade picture, exact).
 	void set_render_scale(int scale);
 	// Widescreen: `aspect` is the picture's width/height (4/3 = the arcade's). The 3D view and the
-	// sky widen; the 2D text stays in the middle 4:3.
+	// sky widen; 2D text stays in the middle 4:3 unless the game anchors its HUD to the edges.
 	void set_aspect(float aspect);
 	float aspect() const { return m_aspect; }
 	int render_scale() const { return m_scale; }
@@ -487,6 +487,12 @@ private:
 	void prepare_layers();
 	bool m_layers_together = false;               // prepare_layers: drawing several at once
 	uint64_t m_tiles_updated = ~0ull;   // the game frame the tile graphics were last decoded for
+	bool hud_edge_pinning_active() const;
+	void pin_hud_tiles(bitmap_rgb32 &pixels, int layer) const;
+	float hud_edge_offset(float left, float right) const;
+	float hud_view_offset(float x, float y) const;
+	void pin_hud_point(point_t *point, float offset) const;
+	void pin_hud_direct(point_t *points, quad_t *quads);
 	void draw_tiles(bitmap_rgb32 &bitmap, const rectangle &cliprect, int layer, int flags);
 public:
 	static bool s_moire_blend;

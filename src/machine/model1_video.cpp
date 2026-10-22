@@ -1122,6 +1122,13 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 	game::object_effects effect;
 	if (m_gameplay.object) effect = m_gameplay.object(tex_adr, poly_adr, size, poly_data);
 	if (effect.hidden) return;
+	const float original_viewx = m_view->viewx;
+	const bool pin_object = hud_edge_pinning_active() &&
+		std::find(m_video->right_edge_objects.begin(), m_video->right_edge_objects.end(), poly_adr) != m_video->right_edge_objects.end();
+	if (pin_object) {
+		m_view->viewx += m_ext;
+		m_view->recompute_frustum();
+	}
 #if 0
 	dump = poly_adr == 0x944ea;
 	dump = 0;
@@ -1410,11 +1417,17 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 				break;
 		}
 	}
+	if (pin_object) {
+		m_view->viewx = original_viewx;
+		m_view->recompute_frustum();
+	}
 }
 
 
 int model1::push_direct(int list_offset) {
 	uint32_t tex_adr = readi(list_offset + 2);
+	point_t *const first_point = m_pointpt;
+	quad_t *const first_quad = m_quadpt;
 	//  v1      = readi(list_offset+2+2);
 	//  v2      = readi(list_offset+2+10);
 
@@ -1583,8 +1596,39 @@ int model1::push_direct(int list_offset) {
 			break;
 		}
 	}
+	pin_hud_direct(first_point, first_quad);
 	list_offset += 4;
 	return list_offset;
+}
+
+void model1::pin_hud_direct(point_t *points, quad_t *quads)
+{
+	if (!hud_edge_pinning_active()) return;
+	const size_t count = size_t(m_pointpt - points);
+	std::vector<size_t> parent(count);
+	for (size_t i = 0; i < count; i++) parent[i] = i;
+	auto root = [&](size_t i) {
+		while (parent[i] != i) {
+			parent[i] = parent[parent[i]];
+			i = parent[i];
+		}
+		return i;
+	};
+	for (quad_t *q = quads; q < m_quadpt; q++)
+		for (int i = 1; i < 4; i++)
+			parent[root(size_t(q->p[i] - points))] = root(size_t(q->p[0] - points));
+
+	std::vector<float> left(count, float(SCREEN_W)), right(count, 0);
+	for (size_t i = 0; i < count; i++) {
+		const size_t group = root(i);
+		const float x = points[i].fx / m_view->scale - m_view->ext;
+		left[group] = std::min(left[group], x);
+		right[group] = std::max(right[group], x);
+	}
+	for (size_t i = 0; i < count; i++) {
+		const size_t group = root(i);
+		pin_hud_point(&points[i], hud_edge_offset(left[group], right[group]));
+	}
 }
 
 int model1::skip_direct(int list_offset) const
@@ -2009,7 +2053,10 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 			}
 			case 0xc:
 				M1_LOG(LOG_TGP, "VIDEO:   trans (%f, %f)\n", readf(list_offset + 2), readf(list_offset + 4));
-				m_view->set_view_translation(readf(list_offset + 2), readf(list_offset + 4));
+				{
+					const float x = readf(list_offset + 2), y = readf(list_offset + 4);
+					m_view->set_view_translation(x + hud_view_offset(x, y), y);
+				}
 				list_offset += 6;
 				break;
 			case 0xf:

@@ -107,15 +107,21 @@ also supports:
 VR widens active driving scenes and keeps the track-selection screen and camera-less screens at 4:3. It does not
 use Virtua Fighter's camera IDs or title/select backdrop rules.
 
-In the app, Picture shapes **16:9** and **16:10** use VR's own test-menu setting **MONITOR TYPE = 16:9 WIDE** instead. This is EEPROM byte `0x0b`,
-which the arcade copies to RAM `0x40dc8b`. With that setting, the game draws an anamorphic picture for a stretched widescreen monitor.
-It squeezes the 3D view and the tachometer by 0.75, widens the field of view, and selects its wide tile graphics.
-The host keeps the machine at 4:3 and stretches the frame to the chosen shape. The game's picture is made for 16:9, so at 16:10 it
-fills the screen about 10% narrower than intended.
+In widened driving scenes, the speed and position displays, lap time, circuit map, and SEGA logo move with
+their nearest screen edge. Centered items such as the countdown timer and the car remain centered; full-screen
+artwork, attract-mode ranking boards and centered prompts, and non-driving screens are unchanged.
+The pre-race pit/grid sequence uses the same HUD anchors as the active race, without repositioning at the start.
+The left-hand gauge is grouped separately from the large centered countdown/GO! graphics, so those prompts
+do not pull it back into the 4:3 frame.
+Attract-mode FREEPLAY/credit notices and the copyright follow the left and right edges respectively,
+including the pit-stop sequence. Tile HUD graphics
+are grouped before anchoring, and each polygon overlay moves as a whole so letters and shapes are not split.
 
-Every other shape writes **4:3 NORMAL** and uses the host widening. The change is applied at boot because switching live
-only partly changes the game. Choosing it in the menu therefore restarts the game when the menu closes, and the F6 hotkey restarts
-immediately. Picture shape also overrides a MONITOR TYPE changed in the service menu at the next boot.
+All wide picture shapes, including **16:9** and **16:10**, use host widening and edge-pinned HUD graphics,
+not a stretched frame. Changing picture shape does not require a game restart.
+The app sets **MONITOR TYPE = 4:3 NORMAL** at boot, overriding an old **16:9 WIDE** setting with one additional
+boot if needed. This prevents the arcade's anamorphic widescreen graphics from being combined with host widening.
+The original monitor setting remains available to headless tools for arcade-mode regression tests.
 `build/bin/vr_gameplay_test build/vr --monitor[-native]` checks the arcade reads both values after reboot and draws them differently.
 
 The spinning SEGA logo stays in front of close-up cars during attract mode, with either draw distance

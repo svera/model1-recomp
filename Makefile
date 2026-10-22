@@ -258,7 +258,8 @@ $$(OBJ)/build/gen/$(1)_rec.o: build/gen/$(1)_rec.cpp
 # the desktop host with the game's part of it and its ROM table
 ifeq ($$($(1)_HOST_REC),native)
 $$(BIN)/$(1): $$(BIN)/$(1)-native
-	cp $$< $$@
+	# Replace the inode so macOS does not reuse a cached signature from the previous executable.
+	cp $$< $$@.tmp && mv -f $$@.tmp $$@
 else
 $$(BIN)/$(1): $$(call objs,src/host/main.cpp src/host/menu.cpp src/games/$(1)/host.cpp $$(ROMSET) src/games/$(1)/romset.cpp src/host/stb_image_impl.cpp $$(CORE) $$(MACHINE) $$(SOUND) $$(RT) $$(RML_SRC)) $$(MUSASHI_OBJ) $$(Z80_OBJ) $$(CORO_OBJ) $$(if $$(filter gen,$$($(1)_HOST_REC)),$$(OBJ)/build/gen/$(1)_rec.o,$$(REC_NONE)) $$(GPU3D_OBJ)
 	@mkdir -p $$(dir $$@)

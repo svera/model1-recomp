@@ -6,7 +6,6 @@
 #include "romset.h"
 #include <optional>
 #include <charconv>
-#include <cmath>
 #include <cstdlib>
 
 namespace game::vr {
@@ -134,21 +133,9 @@ public:
 
 	bool has_play_style() const override { return true; }
 
-	// 16:9 and 16:10 use the arcade's own widescreen monitor setting (the test menu's MONITOR TYPE), read
-	// at boot; its picture is made for 16:9, so 16:10 stretches it a little narrower.
-	bool set_picture_shape(float aspect) override
-	{
-		wide_monitor = std::fabs(aspect - 16.0f / 9.0f) < 0.001f || std::fabs(aspect - 16.0f / 10.0f) < 0.001f;
-		if (!ctx) return false;
-		const int now = monitor_type(ctx->machine);
-		return now >= 0 && now != int(wide_monitor);
-	}
-
-	bool picture_stretched() const override { return wide_running; }
-
 	const char *picture_shape_help() const override
 	{
-		return "16:9 and 16:10 use the arcade's own widescreen monitor setting, with its wider view, and restart the game. ";
+		return "Wide shapes widen the view without stretching the HUD; off-center HUD elements follow the screen edges. ";
 	}
 
 	void before_frame() override
@@ -165,8 +152,7 @@ public:
 	{
 		language_before.reset();
 		machine_before.reset();
-		const bool monitor_changed = set_monitor_type(ctx->machine, int(wide_monitor));
-		wide_running = monitor_type(ctx->machine) == 1;
+		const bool monitor_changed = set_monitor_type(ctx->machine, 0);
 		const int now = coin_setting(ctx->machine);
 		if (now < 0) return monitor_changed;
 		if (ctx->pc_mode) {
@@ -216,7 +202,6 @@ private:
 
 	host_context *ctx = nullptr;
 	bool extended = true;
-	bool wide_monitor = false, wide_running = false;
 	camera_cycle cameras;
 	int arcade_coin = -1;
 	std::optional<int> language_before;

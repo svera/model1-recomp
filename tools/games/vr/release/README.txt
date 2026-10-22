@@ -28,9 +28,11 @@ steers, right trigger accelerates, left trigger brakes, Y / Triangle cycles came
 The same bindings can be changed there; the game starts with
 the configured Start control.
 
-Display settings, antialiasing, sound, and saves are available from the menu. Picture shape
-16:9 switches the arcade's own MONITOR TYPE to 16:9 WIDE (its wider widescreen view) and
-restarts the game; any other shape sets 4:3 NORMAL. Virtua Racing recompiles your ROM's V60 program to native code at startup. Use --interp to run on the
+Display settings, antialiasing, sound, and saves are available from the menu. All wide picture
+shapes, including 16:9 and 16:10, widen the view without stretching the HUD. Off-center HUD
+elements follow the screen edges. Picture shape changes do not restart the game; the app
+keeps the arcade's MONITOR TYPE at 4:3 NORMAL.
+Virtua Racing recompiles your ROM's V60 program to native code at startup. Use --interp to run on the
 Model 1 interpreter instead.
 
 CREDITS

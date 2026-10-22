@@ -13,6 +13,68 @@
 
 struct model1_video_test
 {
+	static void race_grid_hud(const char *dir, const char *scenario, float aspect)
+	{
+		model1 m(load_regions(dir, game::id{ "vr" }));
+		m.set_aspect(aspect);
+		m.reset();
+		auto play = game::make_auto_play(game::id{ "vr" }, scenario, 12345, false);
+		assert(play);
+		std::set<uint8_t> checked;
+		size_t gauge_pixels = 0, go_pixels = 0;
+		for (int f = 1; f <= 4800; f++) {
+			const auto in = play->frame(f, m);
+			for (int c = 0; c < 3; c++) {
+				if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
+				m.m_inputs[c] = uint8_t(~in.pressed[c]);
+			}
+			m.run_frame();
+			const uint8_t phase = m.work_ram()[0x1138];
+			if (phase != 0x12 && phase != 0x14) continue;
+			assert(m.hud_edge_pinning_active());
+			bitmap_rgb32 original;
+			original.allocate(model1::SCREEN_W + 2 * m.m_ext, model1::SCREEN_H);
+			original.fill(model1::KEY);
+			m.m_tiles.m_ox = m.m_ext;
+			m.m_tiles.draw(original, original.cliprect(), 1, 0, 0);
+			m.m_tiles.m_ox = 0;
+			const auto &cached = m.cached_layer(1, 0).px;
+			assert(m.m_tiles.tile_r(0x5000) == 0 && m.m_tiles.tile_r(0x5004) == 0);
+			for (int y = 0; y < model1::SCREEN_H; y++)
+				for (int x = 0; x < model1::SCREEN_W; x++) {
+					const uint32_t value = original.pix(y, m.m_ext + x);
+					if (value == model1::KEY) continue;
+					const uint32_t code = m.m_tiles.tile_code(m.m_tiles.tile_r((y / 8) * 64 + x / 8));
+					if (code >= 0x1180 && code <= 0x11bc) {
+						assert(cached.pix(y, x) == value);
+						gauge_pixels++;
+					} else if (code >= 0x1300 && code <= 0x15ff) {
+						assert(cached.pix(y, m.m_ext + x) == value);
+						go_pixels++;
+					}
+				}
+			m.pin_hud_tiles(original, 1);
+			assert(std::equal(original.data(), original.data() + size_t(original.width()) * original.height(), cached.data()));
+			size_t edge_pixels = 0;
+			for (int y = 0; y < model1::SCREEN_H; y++)
+				for (int x = 0; x < m.m_ext; x++)
+					edge_pixels += cached.pix(y, x) != model1::KEY;
+			if (edge_pixels > 100) checked.insert(phase);
+		}
+		assert(checked.size() == 2);
+		assert(gauge_pixels > 10000);
+		if (!*scenario) assert(go_pixels > 10000);
+		printf("VR %s countdown/grid/racing HUD: edge-anchored at %.3f; centered prompts unchanged\n",
+			*scenario ? scenario : "beginner", aspect);
+	}
+
+	static void race_grid_hud(const char *dir)
+	{
+		for (const char *scenario : { "", "intermediate" })
+			for (float aspect : { 16.0f / 10, 16.0f / 9, 21.0f / 9 })
+				race_grid_hud(dir, scenario, aspect);
+	}
+
 	static void car_visibility(const char *dir, bool extended, bool native = false)
 	{
 		model1 m(load_regions(dir, game::id{ "vr" })), reference(load_regions(dir, game::id{ "vr" }));
@@ -461,6 +523,121 @@ struct model1_video_test
 			assert(p->foreground && p->z == -.1f);
 	}
 
+	static void hud_edge_pinning()
+	{
+		model1::regions regions;
+		regions.title = game::id{ "vr" };
+		model1 m(std::move(regions));
+		m.set_aspect(16.0f / 9);
+		m.m_wide_frame = true;
+		m.m_ram_b[0x1138] = 0x14;
+		assert(m.hud_view_offset(149, 12) == m.m_ext);
+		assert(m.hud_view_offset(-232, 134) == -m.m_ext);
+		assert(m.hud_view_offset(0, -30) == 0);
+		assert(m.hud_edge_pinning_active());
+
+		constexpr uint32_t KEY = 0xff000000;
+		const int ext = m.m_ext;
+		bitmap_rgb32 pixels;
+		pixels.allocate(model1::SCREEN_W + 2 * ext, model1::SCREEN_H);
+		pixels.fill(KEY);
+		pixels.pix(100, ext + 20) = 0x000000ff;
+		pixels.pix(100, ext + model1::SCREEN_W / 2) = 0x0000ff00;
+		pixels.pix(100, ext + 400) = 0x00ff0000;
+		m.pin_hud_tiles(pixels, 1);
+		assert(pixels.pix(100, 20) == 0x000000ff);
+		assert(pixels.pix(100, ext + 20) == KEY);
+		assert(pixels.pix(100, ext + model1::SCREEN_W / 2) == 0x0000ff00);
+		assert(pixels.pix(100, 400 + 2 * ext) == 0x00ff0000);
+		assert(pixels.pix(100, ext + 400) == KEY);
+
+		bitmap_rgb32 untouched;
+		untouched.allocate(model1::SCREEN_W + 2 * ext, model1::SCREEN_H);
+		untouched.fill(KEY);
+		untouched.pix(100, ext + 20) = 0x000000ff;
+		m.pin_hud_tiles(untouched, 2);
+		assert(untouched.pix(100, ext + 20) == 0x000000ff);
+		m.m_ram_b[0x1138] = 0x03;
+		for (int x = 16; x < 136; x++) untouched.pix(352, ext + x) = 0x00ffff00;
+		for (int x = 400; x < 480; x++) untouched.pix(368, ext + x) = 0x0000ffff;
+		for (int x = 180; x < 316; x++) untouched.pix(296, ext + x) = 0x00ffffff;
+		m.pin_hud_tiles(untouched, 1);
+		assert(untouched.pix(100, ext + 20) == 0x000000ff);
+		for (int x = 16; x < 136; x++) {
+			assert(untouched.pix(352, x) == 0x00ffff00);
+			if (ext + x >= 136) assert(untouched.pix(352, ext + x) == KEY);
+		}
+		for (int x = 400; x < 480; x++) {
+			assert(untouched.pix(368, 2 * ext + x) == 0x0000ffff);
+			if (ext + x < 2 * ext + 400) assert(untouched.pix(368, ext + x) == KEY);
+		}
+		for (int x = 180; x < 316; x++) assert(untouched.pix(296, ext + x) == 0x00ffffff);
+		m.m_ram_b[0x1138] = 0x14;
+		for (int x = 120; x <= 376; x++) untouched.pix(350, ext + x) = 0x00ffffff;
+		m.pin_hud_tiles(untouched, 1);
+		for (int x = 120; x <= 376; x++) assert(untouched.pix(350, ext + x) == 0x00ffffff);
+		m.m_ram_b[0x1138] = 0x12;
+		untouched.pix(100, ext + 20) = 0x000000ff;
+		m.pin_hud_tiles(untouched, 1);
+		assert(untouched.pix(100, 20) == 0x000000ff);
+		assert(untouched.pix(100, ext + 20) == KEY);
+		assert(m.hud_edge_pinning_active());
+		m.m_ram_b[0x1138] = 0x10;
+		untouched.pix(100, ext + 20) = 0x000000ff;
+		m.pin_hud_tiles(untouched, 1);
+		assert(untouched.pix(100, ext + 20) == 0x000000ff);
+		assert(!m.hud_edge_pinning_active());
+
+		m.m_ram_b[0x1138] = 0x14;
+		m.m_view->set_viewport(248, 192, 0, 495, 0, 383);
+		model1::point_t left{ .x = -200 }, center{ .x = 0 }, right{ .x = 200 };
+		for (model1::point_t *point : { &left, &center, &right }) m.m_view->project_point_direct(point);
+		m.pin_hud_point(&left, m.hud_edge_offset(48, 100));
+		m.pin_hud_point(&center, m.hud_edge_offset(230, 266));
+		m.pin_hud_point(&right, m.hud_edge_offset(400, 448));
+		assert(left.s.x == 48 && center.s.x == 248 + ext && right.s.x == 448 + 2 * ext);
+		assert(m.hud_edge_offset(0, model1::SCREEN_W - 1) == 0);
+		// A graphic crossing the old per-vertex threshold must receive one uniform translation.
+		model1::point_t a{}, b{};
+		a.fx = float(ext + 400);
+		b.fx = float(ext + 350);
+		const float offset = m.hud_edge_offset(350, 400);
+		m.pin_hud_point(&a, offset);
+		m.pin_hud_point(&b, offset);
+		assert(a.fx - b.fx == 50 && offset == ext);
+		m.m_ram_b[0x1138] = 0x10;
+		model1::point_t unchanged{ .x = -200 };
+		m.m_view->project_point_direct(&unchanged);
+		const int old_x = unchanged.s.x;
+		m.pin_hud_point(&unchanged, m.hud_edge_offset(48, 100));
+		assert(unchanged.s.x == old_x);
+		for (float aspect : { 16.0f / 10, 16.0f / 9, 21.0f / 9, 32.0f / 9 })
+			for (int scale : { 1, 2 })
+			for (uint8_t phase : { 0x12, 0x14 }) {
+				m.set_aspect(aspect);
+				m.set_render_scale(scale);
+				m.m_ram_b[0x1138] = phase;
+				m.m_view->set_viewport(248, 192, 0, 495, 0, 383);
+				auto *points = m.m_pointdb.get();
+				auto *quads = m.m_quaddb.get();
+				for (int i = 0; i < 8; i++) {
+					points[i] = {};
+					points[i].x = float((i < 4 ? 300 : 0) + (i % 2) * (i < 4 ? 100 : 496) - 248);
+					m.m_view->project_point_direct(&points[i]);
+				}
+				quads[0] = model1::quad_t(0, 0, points, points + 1, points + 2, points + 3);
+				quads[1] = model1::quad_t(0, 0, points + 4, points + 5, points + 6, points + 7);
+				m.m_pointpt = points + 8;
+				m.m_quadpt = quads + 2;
+				const float original_right = points[0].fx, original_curtain = points[4].fx;
+				m.pin_hud_direct(points, quads);
+				assert(points[0].fx == original_right + m.m_ext * scale);
+				assert(points[1].fx - points[0].fx == 100 * scale);
+				assert(points[4].fx == original_curtain);
+				assert(points[5].fx - points[4].fx == 496 * scale);
+			}
+	}
+
 	static void native_motion(const char *dir)
 	{
 		model1 reference(load_regions(dir, game::id{ "vr" })), native(load_regions(dir, game::id{ "vr" }));
@@ -544,14 +721,30 @@ struct model1_video_test
 	{
 		model1 m(load_regions(dir, game::id{ "vr" }));
 		m.set_smooth(true);
-		m.set_aspect(16.0f / 9);
+		m.set_aspect(21.0f / 9);
 		m.reset();
-		size_t checked = 0, handoffs = 0;
+		size_t checked = 0, handoffs = 0, notice_pixels = 0;
 		for (int f = 1; f <= 2800; f++) {
 			m.run_frame();
 			if (f < 2600) continue;
 			for (double fraction : { .25, .75 }) {
 				m.render_smooth(double(m.frame_number()) - fraction);
+				assert(m.work_ram()[0x1138] == 0x07 && m.hud_edge_pinning_active());
+				if (f == 2700 && fraction == .25) {
+					bitmap_rgb32 original;
+					original.allocate(model1::SCREEN_W, model1::SCREEN_H);
+					original.fill(model1::KEY);
+					m.m_tiles.draw(original, original.cliprect(), 1, 0, 0);
+					const auto &pinned = m.cached_layer(1, 0).px;
+					for (int y = 344; y < model1::SCREEN_H; y++)
+						for (int x = 0; x < model1::SCREEN_W; x++) {
+							const uint32_t value = original.pix(y, x);
+							if (value == model1::KEY || (x >= 160 && x < 360)) continue;
+							const int target = x < 160 ? x : x + 2 * m.m_ext;
+							assert(pinned.pix(y, target) == value);
+							notice_pixels++;
+						}
+				}
 				const auto &a = m.m_logic[0], &b = m.m_logic[1];
 				for (size_t i = 0; i < b.slots.size(); i++) {
 					if (b.slots[i].polys.empty() || b.slots[i].polys[0] != 0x1031c7 || !m.m_blend_ok[i]) continue;
@@ -569,7 +762,7 @@ struct model1_video_test
 				}
 			}
 		}
-		assert(checked > 100 && handoffs > 0);
+		assert(checked > 100 && handoffs > 0 && notice_pixels > 100);
 		printf("VR SEGA logo handed between records: %zu smoothed pictures in place (%zu handoffs)\n", checked, handoffs);
 	}
 
@@ -643,6 +836,14 @@ struct model1_video_test
 
 int main(int argc, char **argv)
 {
+	if (argc > 2 && std::string(argv[2]) == "--grid-hud") {
+		model1_video_test::race_grid_hud(argv[1]);
+		return 0;
+	}
+	if (argc > 2 && std::string(argv[2]) == "--pit") {
+		model1_video_test::logo_handoff(argv[1]);
+		return 0;
+	}
 	if (argc > 2 && std::string(argv[2]) == "--car-visibility") {
 		model1_video_test::culled_records();
 		model1_video_test::car_visibility(argv[1], false);
@@ -654,6 +855,7 @@ int main(int argc, char **argv)
 	model1_video_test::extra_scenery();
 	model1_video_test::scenery_records();
 	model1_video_test::culled_records();
+	model1_video_test::hud_edge_pinning();
 	model1_video_test::swaying_camera();
 	if (argc > 2 && std::string(argv[2]) == "--goal") {
 		model1_video_test::goal_fly_in(argv[1]);
@@ -674,9 +876,11 @@ int main(int argc, char **argv)
 			for (bool extended : { false, true })
 				model1_video_test::logo(argv[1], smooth, extended);
 	if (argc > 1) {
+		model1_video_test::race_grid_hud(argv[1]);
 		model1_video_test::logo_handoff(argv[1]);
 		model1_video_test::goal_fly_in(argv[1]);
 		model1_video_test::logo(argv[1], true, true, 2, 16.0f / 9);
+		model1_video_test::logo(argv[1], true, true, 2, 21.0f / 9);
 		model1_video_test::logo(argv[1], false, false, 2);
 		model1_video_test::scenery_motion(argv[1], false);
 		model1_video_test::scenery_motion(argv[1], true);
