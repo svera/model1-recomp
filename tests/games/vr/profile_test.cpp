@@ -5,6 +5,29 @@
 
 int main()
 {
+	game::vr::initials_steering wheel;
+	assert(wheel.update(false, true, false, 128) == 0);
+	assert(wheel.update(false, false, true, 128) == 255);
+	assert(wheel.update(false, false, false, 128) == 128);
+	assert(wheel.update(true, false, true, 128) == 129);
+	assert(wheel.update(true, false, false, 128) == 129);
+	assert(wheel.update(true, true, true, 128) == 129);
+	assert(wheel.update(true, true, false, 128) == 128);
+	for (int value = 127; value >= 0; value--)
+		assert(wheel.update(true, true, false, 128) == value);
+	assert(wheel.update(true, true, false, 128) == 0);
+	assert(wheel.update(true, false, false, 128) == 0);
+	for (int value = 1; value <= 255; value++)
+		assert(wheel.update(true, false, true, 128) == value);
+	assert(wheel.update(true, false, true, 128) == 255);
+	assert(wheel.update(true, false, false, 128) == 255);
+	assert(wheel.update(true, false, false, 100) == 100);
+	assert(wheel.update(true, false, false, 128) == 128);
+	assert(wheel.update(true, true, false, 100) == 99);
+	assert(wheel.update(false, false, false, 128) == 128);
+	assert(wheel.update(true, false, false, 128) == 128);
+	assert(wheel.update(true, true, false, 128) == 127);
+
 	const auto &vr = game::get(game::vr::ID);
 	assert(vr.title.name == "vr");
 	assert(game::find("vr") == game::vr::ID);

@@ -165,7 +165,7 @@ void load_script(const char *path)
 }
 bool g_left_test_menu = false;       // set when it closes (the PC build then restarts past the boot screen)
 
-hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const player_controls ctl[2], const control_profile &prof)
+hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const player_controls ctl[2], const control_profile &prof, game_host &game_part)
 {
 	const auto &BITS = prof.bits;
 	uint8_t in[3] = { 0, 0, 0 };  // pressed bits, inverted at the end
@@ -293,7 +293,7 @@ hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const playe
 				auto dpad = [&](SDL_GamepadButton b) { return k.dpad && pads[0] && SDL_GetGamepadButton(pads[0], b); };
 				const bool low = k.low >= 0 && (key(ctl[0].key[k.low]) || dpad(SDL_GAMEPAD_BUTTON_DPAD_LEFT));
 				const bool high = k.high >= 0 && (key(ctl[0].key[k.high]) || dpad(SDL_GAMEPAD_BUTTON_DPAD_RIGHT));
-				if (low != high) value = low ? 0 : 255;
+				value = game_part.analog_key_input(m, int(channel), low, high, value);
 			}
 			m.set_analog_input(int(channel), value);
 		}
@@ -2027,7 +2027,7 @@ int main(int argc, char **argv)
 	// A game frame's inputs (false: a hotkey opened the menu, no frame runs) and what follows one: the
 	// scene changes' hold, its sound
 	auto frame_inputs = [&]() -> bool {
-		switch (read_inputs(m, pads, pstate, cfg.ctl, controls)) {
+		switch (read_inputs(m, pads, pstate, cfg.ctl, controls, game_part)) {
 		case hotkey::menu: open_menu(); break;
 		case hotkey::scale: player_scale_to(cfg.scale % 4 + 1); break;
 		case hotkey::aspect: set_shape((aspect_i + 1) % N_ASPECTS); break;

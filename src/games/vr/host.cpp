@@ -17,6 +17,13 @@ public:
 	const romset::definition &romset() const override { return ROMSET; }
 	const control_profile &controls() const override { return CONTROLS; }
 
+	uint8_t analog_key_input(model1 &machine, int channel, bool low, bool high, uint8_t value) override
+	{
+		if (channel != 0) return game_host::analog_key_input(machine, channel, low, high, value);
+		const bool entering_initials = machine.work_ram()[0x1138] == 0x1e && machine.read32(0x5018fc) != 0;
+		return initials_wheel.update(entering_initials, low, high, value);
+	}
+
 	void load_settings(const settings_map &settings) override
 	{
 		if (const auto coins = settings.find("arcade_coins"); coins != settings.end()) {
@@ -171,6 +178,7 @@ public:
 	}
 
 private:
+	initials_steering initials_wheel;
 	bool apply_settings()
 	{
 		bool changed = apply_language();

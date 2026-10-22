@@ -39,6 +39,12 @@ public:
 	virtual const romset::definition &romset() const = 0;   // the MAME set the player's zip is
 	virtual const control_profile &controls() const = 0;
 
+	// Digital bindings for an analog channel, after reading the pad's analog axis.
+	virtual uint8_t analog_key_input(model1 &, int channel, bool low, bool high, uint8_t value)
+	{
+		return low != high ? (low ? 0 : 255) : value;
+	}
+
 	// settings.ini's own keys (read before start)
 	virtual void load_settings(const settings_map &) {}
 	virtual void save_settings(FILE *) const {}

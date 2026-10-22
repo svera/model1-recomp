@@ -46,6 +46,9 @@ steer, Up accelerates, Down brakes, and X/Z shift up/down. On a gamepad, the def
 steering, right trigger for accelerator, and left trigger for brake. Digital controls also include Start and Coin.
 Press **C** or gamepad **Y / Triangle** to cycle through the four race cameras. Holding the button advances
 only once; remap **Cycle camera** under Controls > Player 1 (keyboard or pad buttons).
+On the initials screen, hold Left/Right (or the pad's D-pad) to adjust the selection gradually.
+Release to keep the selection, then press Accelerator to confirm each initial. Analog-stick steering
+remains available, and racing still uses full steering lock for the digital steering keys.
 
 **Game > Service menu** opens the arcade's internal machine configuration and diagnostics. Use `9` to move
 and `F2` to select; choose **EXIT** to return to the game.
