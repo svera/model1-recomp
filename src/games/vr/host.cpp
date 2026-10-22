@@ -134,10 +134,11 @@ public:
 
 	bool has_play_style() const override { return true; }
 
-	// 16:9 is the arcade's own widescreen monitor setting (the test menu's MONITOR TYPE), read at boot.
+	// 16:9 and 16:10 use the arcade's own widescreen monitor setting (the test menu's MONITOR TYPE), read
+	// at boot; its picture is made for 16:9, so 16:10 stretches it a little narrower.
 	bool set_picture_shape(float aspect) override
 	{
-		wide_monitor = std::fabs(aspect - 16.0f / 9.0f) < 0.001f;
+		wide_monitor = std::fabs(aspect - 16.0f / 9.0f) < 0.001f || std::fabs(aspect - 16.0f / 10.0f) < 0.001f;
 		if (!ctx) return false;
 		const int now = monitor_type(ctx->machine);
 		return now >= 0 && now != int(wide_monitor);
@@ -147,7 +148,7 @@ public:
 
 	const char *picture_shape_help() const override
 	{
-		return "16:9 uses the arcade's own widescreen monitor setting, with its wider view, and restarts the game. ";
+		return "16:9 and 16:10 use the arcade's own widescreen monitor setting, with its wider view, and restart the game. ";
 	}
 
 	void before_frame() override

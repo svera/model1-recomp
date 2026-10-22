@@ -1,7 +1,9 @@
 # Virtua Racing
 
-Virtua Racing (Sega, 1992) is supported as an experimental second Model 1 title. The desktop build and release
-packages recompile the V60 program to native code at startup. Run with `--interp` to use the interpreter instead.
+Virtua Racing (Sega, 1992) is supported as a full single-cabinet game: attract mode, every course, qualifying,
+races, results and rankings, the service menu and free play. Linked (multi-cabinet) play isn't supported. The
+desktop build and release packages recompile the V60 program to native code at startup. Run with `--interp` to
+use the interpreter instead.
 
 For shared Model 1 architecture, build requirements, and repository information, see the
 [root README](../../../README.md). For the port's implementation and validation history, see
@@ -105,10 +107,11 @@ also supports:
 VR widens active driving scenes and keeps the track-selection screen and camera-less screens at 4:3. It does not
 use Virtua Fighter's camera IDs or title/select backdrop rules.
 
-In the app, Picture shape **16:9** uses VR's own test-menu setting **MONITOR TYPE = 16:9 WIDE** instead. This is EEPROM byte `0x0b`,
+In the app, Picture shapes **16:9** and **16:10** use VR's own test-menu setting **MONITOR TYPE = 16:9 WIDE** instead. This is EEPROM byte `0x0b`,
 which the arcade copies to RAM `0x40dc8b`. With that setting, the game draws an anamorphic picture for a stretched widescreen monitor.
 It squeezes the 3D view and the tachometer by 0.75, widens the field of view, and selects its wide tile graphics.
-The host keeps the machine at 4:3 and stretches the frame to 16:9.
+The host keeps the machine at 4:3 and stretches the frame to the chosen shape. The game's picture is made for 16:9, so at 16:10 it
+fills the screen about 10% narrower than intended.
 
 Every other shape writes **4:3 NORMAL** and uses the host widening. The change is applied at boot because switching live
 only partly changes the game. Choosing it in the menu therefore restarts the game when the menu closes, and the F6 hotkey restarts

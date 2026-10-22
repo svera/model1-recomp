@@ -1,14 +1,13 @@
 # Model 1 Recomp
 
 This project forks Mr. Finster's superb [Virtua Fighter recomp](https://github.com/mr-finster/vf1-recomp), refactoring it to support the rest of Sega's Model 1 arcade hardware games library as native desktop runtimes. The Model 1 was used by
-multiple games; this repository currently supports Virtua Fighter and has experimental Virtua Racing support.
+multiple games; this repository currently supports Virtua Racing.
 
 ## Games
 
 | Game | Support | Documentation |
 | --- | --- | --- |
-| Virtua Fighter | Native V60 recompilation; development builds only, release packaging disabled | [Virtua Fighter guide](src/games/vf/README.md) |
-| Virtua Racing | Startup native V60 recompilation; experimental game support | [Virtua Racing guide](src/games/vr/README.md) |
+| Virtua Racing | Startup native V60 recompilation; full single-cabinet game (no linked play) | [Virtua Racing guide](src/games/vr/README.md) |
 
 Each game requires the player's own MAME ROM set. No game ROMs or ROM-derived program code are included.
 
@@ -36,24 +35,18 @@ from analyzed V60 functions and keeps ROM-derived output under `build/`.
 ## Build and test
 
 Development requires a C++20 compiler, zlib, SDL 3, and FreeType. On macOS, install the latter dependencies with
-`brew install sdl3 freetype`. Virtua Fighter and Virtua Racing have separate build instructions in their guides.
+`brew install sdl3 freetype`. Games have separate build instructions in their guides.
 Every game has the same make targets, made from its `src/games/<game>/game.mk`: `<game>`, `<game>-native`,
 `<game>-regions`, `<game>-coverage`, `<game>-static`, `<game>-lockstep`, and `<game>-native-lockstep`.
 
 Release packaging is enabled only for Virtua Racing on macOS, Windows, and Linux. Each platform's
-`package.sh` builds VR by default; explicitly requesting `vf` is rejected. VF development targets remain available.
-
-Publishing a GitHub release (including a prerelease) runs [Package release](.github/workflows/release.yml)
-from its tag. It builds the universal macOS ZIP, Windows x86-64 ZIP, and Steam Deck / Linux x86-64
-tarball in parallel, then attaches all three archives to that release once every build succeeds.
-Draft releases do not trigger builds. The release tag supplies the package version; rerunning the
-workflow replaces assets with the same names. No ROMs are needed or included.
+`package.sh` builds VR by default.
 
 Useful shared checks:
 
 ```sh
 make test-model1io-adc
-make test-vf-profile test-vf-gameplay test-vr-profile test-vr-gameplay test-vr-tgp-track
+make test-vr-profile test-vr-gameplay test-vr-tgp-track
 ```
 
 ## Repository layout
@@ -64,8 +57,8 @@ make test-vf-profile test-vf-gameplay test-vr-profile test-vr-gameplay test-vr-t
 | `src/machine` | Shared Model 1 memory map, interrupts, TGP, rasterizer, tile chip, sound and I/O boards |
 | `src/rt` | Recompiler runtime and startup native recompilation |
 | `src/host` | SDL 3 host, input, pacing, and RmlUi menu |
-| `src/games/vf`, `src/games/vr` | Title profiles and game-specific behavior |
-| `assets/games/vf`, `assets/games/vr` | Each game's address map, icon and other artwork |
+| `src/games/vr` | VR profiles and game-specific behavior |
+| `assets/games/vr` | VR address map, icon and other artwork |
 | `src/gpu` | Metal and SDL_GPU renderers and shaders |
 | `tools/recomp` | Ahead-of-time V60-to-C++ recompiler |
 | `tools/mac`, `tools/win`, `tools/linux` | Each platform's `package.sh [game ...]`: the downloads, the same for every game |
@@ -75,7 +68,6 @@ make test-vf-profile test-vf-gameplay test-vr-profile test-vr-gameplay test-vr-t
 ## Project notes
 
 - [How it was made and validated](docs/HOW-IT-WAS-MADE.md)
-- [Virtua Fighter-specific documentation](src/games/vf/README.md)
 - [Virtua Racing-specific documentation](src/games/vr/README.md)
 
 ## Credits and licence
