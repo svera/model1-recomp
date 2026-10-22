@@ -182,6 +182,27 @@ static void machine_settings(bool board)
 		assert(!set_machine_setting(machine, setting, -1) && read() == before);
 		assert(!set_machine_setting(machine, setting, counts[i]) && read() == before);
 	}
+	// MONITOR TYPE: EEPROM byte 0x0b, word 5's low byte (the first word the CRC covers)
+	for (int value : { 1, 0, 1 }) {
+		const auto before = read();
+		const int previous = game::vr::monitor_type(machine);
+		assert(game::vr::set_monitor_type(machine, value) == (previous != value));
+		const auto after = read();
+		assert(game::vr::monitor_type(machine) == value);
+		assert(after[5] == uint16_t((before[5] & 0xff00) | value));
+		for (int word = 0; word < 64; word++)
+			if (word != 4 && word != 5) assert(after[word] == before[word]);
+		uint16_t crc = 0;
+		for (int bit = 5 * 16; bit < 64 * 16; bit++) {
+			const bool input = (after[bit / 16] >> (15 - bit % 16)) & 1;
+			const bool top = crc & 0x8000;
+			crc = uint16_t(crc << 1);
+			if (top != input) crc ^= 0x1021;
+		}
+		assert(after[4] == uint16_t(crc >> 8 | crc << 8));
+	}
+	const auto before = read();
+	assert(!game::vr::set_monitor_type(machine, 2) && !game::vr::set_monitor_type(machine, -1) && read() == before);
 }
 
 static void scenery_lists()
@@ -425,6 +446,60 @@ static void rom_machine_settings(const char *dir, bool native)
 	}
 	printf("VR machine settings (%s): arcade reads all four choices after reboot, with unchanged EEPROM and ROM\n",
 		native ? "native" : "interpreter");
+}
+
+static void rom_monitor(const char *dir, bool native)
+{
+	model1 machine(load_regions(dir, game::id{ "vr" }));
+	machine.set_aspect(4.0f / 3.0f);
+	if (native) {
+		rec::hints map;
+		assert(map.read("assets/games/vr/vr_map.txt"));
+		rec::attach(machine.cpu(), "vr");
+		assert(rec::build_native(machine.program_rom(), map));
+		machine.run_cpu = [](int n) { rec::run(n); };
+	}
+	machine.reset();
+	for (int f = 0; f < 900; f++) machine.run_frame();
+	assert(game::vr::set_coin_setting(machine, game::vr::FREE_PLAY));
+	const auto rom = machine.program_rom();
+	std::array<std::vector<uint32_t>, 2> frames;
+	for (int wide : { 0, 1 }) {
+		game::vr::set_monitor_type(machine, wide);
+		assert(game::vr::monitor_type(machine) == wide);
+		machine.reset();
+		if (native) rec::attach(machine.cpu(), "vr");
+		int racing = 0;
+		for (int f = 1; f <= 6000 && racing < 120; f++) {
+			machine.m_inputs[0] = uint8_t(~((f >= 3000 && f < 3006) || (f >= 3120 && f < 3126) ? 0x10 : 0));
+			machine.m_inputs[1] = 0xff;
+			assert(machine.set_analog_input(0, 0x80));
+			assert(machine.set_analog_input(1, 0xff));
+			machine.run_frame();
+			if (machine.work_ram()[0x1138] == 0x14) racing++;
+		}
+		assert(racing == 120);
+		// the arcade's own copy, as its test menu shows it
+		assert(machine.nvram()[0xdc8b] == wide);
+		assert(machine.frame_w() == 496 && machine.frame_h() == 384);
+		frames[wide].assign(machine.frame().data(), machine.frame().data() + size_t(machine.frame_w()) * machine.frame_h());
+		if (const char *shots = getenv("VR_MONITOR_SHOTS")) {
+			const std::string path = std::string(shots) + "/monitor-" + std::to_string(wide) + ".png";
+			assert(write_png(path.c_str(), machine.frame().data(), machine.frame_w(), machine.frame_h()));
+		}
+	}
+	// 16:9 WIDE draws a different (squeezed, wider) 3D picture in the same 496x384
+	size_t differ = 0;
+	for (size_t i = 0; i < frames[0].size(); i++) differ += frames[0][i] != frames[1][i];
+	assert(differ > frames[0].size() / 10);
+	assert(machine.program_rom() == rom);
+	if (native) {
+		if (rec::fallback_count())
+			fprintf(stderr, "VR monitor fallback: %06x\n", rec::first_fallback_address());
+		assert(rec::fallback_count() == 0);
+	}
+	printf("VR monitor type (%s): arcade reads 4:3 and 16:9 WIDE after reboot and draws them differently (%zu pixels)\n",
+		native ? "native" : "interpreter", differ);
 }
 
 static void rom_cameras(const char *dir, bool native)
@@ -703,6 +778,8 @@ int main(int argc, char **argv)
 		rom_car_color(argv[1], std::string(argv[2]) == "--car-color-native");
 	else if (argc > 2 && (std::string(argv[2]) == "--cameras" || std::string(argv[2]) == "--cameras-native"))
 		rom_cameras(argv[1], std::string(argv[2]) == "--cameras-native");
+	else if (argc > 2 && (std::string(argv[2]) == "--monitor" || std::string(argv[2]) == "--monitor-native"))
+		rom_monitor(argv[1], std::string(argv[2]) == "--monitor-native");
 	else if (argc > 2 && (std::string(argv[2]) == "--qualifying" || std::string(argv[2]) == "--qualifying-native"))
 		rom_qualifying(argv[1], std::string(argv[2]) == "--qualifying-native");
 	else if (argc > 1) rom_draw_distance(argv[1], argc > 2 && std::string(argv[2]) == "--native");

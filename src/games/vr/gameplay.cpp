@@ -252,6 +252,32 @@ bool enable_standalone_car_color(model1 &machine)
 	return true;
 }
 
+int monitor_type(model1 &machine)
+{
+	int value = -1;
+	edit_eeprom_settings(machine, 5, [&](uint16_t *e) {
+		const int stored = e[5] & 0xff;
+		if (stored <= 1) value = stored;
+		else fprintf(stderr, "VR: invalid EEPROM monitor type %d; expected 4:3 or 16:9\n", stored);
+		return false;
+	});
+	return value;
+}
+
+bool set_monitor_type(model1 &machine, int value)
+{
+	if (value < 0 || value > 1) {
+		fprintf(stderr, "VR: invalid monitor type %d; expected 0 (4:3) or 1 (16:9)\n", value);
+		return false;
+	}
+	return edit_eeprom_settings(machine, 5, [&](uint16_t *e) {
+		const uint16_t updated = uint16_t((e[5] & 0xff00) | value);
+		if (e[5] == updated) return false;
+		e[5] = updated;
+		return true;
+	});
+}
+
 int coin_setting(model1 &machine)
 {
 	int value = -1;

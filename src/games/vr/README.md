@@ -91,6 +91,16 @@ also supports:
 VR widens active driving scenes and keeps the track-selection screen and camera-less screens at 4:3. It does not
 use Virtua Fighter's camera IDs or title/select backdrop rules.
 
+In the app, Picture shape **16:9** uses VR's own test-menu setting **MONITOR TYPE = 16:9 WIDE** instead. This is EEPROM byte `0x0b`,
+which the arcade copies to RAM `0x40dc8b`. With that setting, the game draws an anamorphic picture for a stretched widescreen monitor.
+It squeezes the 3D view and the tachometer by 0.75, widens the field of view, and selects its wide tile graphics.
+The host keeps the machine at 4:3 and stretches the frame to 16:9.
+
+Every other shape writes **4:3 NORMAL** and uses the host widening. The change is applied at boot because switching live
+only partly changes the game. Choosing it in the menu therefore restarts the game when the menu closes, and the F6 hotkey restarts
+immediately. Picture shape also overrides a MONITOR TYPE changed in the service menu at the next boot.
+`build/bin/vr_gameplay_test build/vr --monitor[-native]` checks the arcade reads both values after reboot and draws them differently.
+
 The spinning SEGA logo stays in front of close-up cars during attract mode, with either draw distance
 and motion setting. `make test-model1-video` checks the shared foreground sorting; with local regions,
 `build/bin/model1_video_test build/vr` also checks actual logo visibility and unchanged pixels outside it.

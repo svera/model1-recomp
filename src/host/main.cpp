@@ -924,6 +924,7 @@ int main(int argc, char **argv)
 		load_backgrounds(m, find_assets() + "/games/" + std::string(host_game().name) + "/backgrounds");
 		load_backgrounds(m, dir + "/backgrounds");
 	}
+	game_part.set_picture_shape(ASPECTS[aspect_i]);
 	game_part.before_boot();
 	game_part.play_style_changed();
 	boot();
@@ -1400,6 +1401,7 @@ int main(int argc, char **argv)
 	};
 	make_texture();
 	// the picture's shape: the chosen one, or the window's (between 4:3 and 32:9)
+	float shape_now = 4.0f / 3.0f;
 	auto apply_aspect = [&] {
 		float a = ASPECTS[aspect_i];
 		if (a <= 0) {
@@ -1407,14 +1409,17 @@ int main(int argc, char **argv)
 			SDL_GetWindowSizeInPixels(win, &w, &h);
 			a = h > 0 ? std::clamp(float(w) / float(h), 4.0f / 3.0f, 32.0f / 9.0f) : 16.0f / 9.0f;
 		}
-		if (std::fabs(a - m.aspect()) > 0.001f)
-			m.set_aspect(a);
+		shape_now = a;
+		// (a game's own widescreen mode: its 4:3 picture stretched, not widened)
+		const float drawn = game_part.picture_stretched() ? 4.0f / 3.0f : a;
+		if (std::fabs(drawn - m.aspect()) > 0.001f)
+			m.set_aspect(drawn);
 	};
 	// 496x384 fills a 4:3 tube on the cabinet; widescreen widens the same picture
 	auto present_shape = [&] {
 		char title[96];
 		snprintf(title, sizeof title, "%s  %dx  %s", host_title(), cfg.scale, ASPECT_NAMES[aspect_i]);
-		SDL_SetRenderLogicalPresentation(ren, int(std::lround(384 * m.aspect())), 384, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+		SDL_SetRenderLogicalPresentation(ren, int(std::lround(384 * shape_now)), 384, SDL_LOGICAL_PRESENTATION_LETTERBOX);
 		SDL_SetWindowTitle(win, title);
 	};
 	// the saved shape from the start (else the picture fills the window, stretched, until F6)
@@ -1566,6 +1571,7 @@ int main(int argc, char **argv)
 	auto redraw_if_stopped = [&] { if (paused || menu.is_open()) { m.set_stopped(true); m.redraw(); m.set_stopped(false); still_dirty = true; } };
 	// Reset (the menu, F3): the menu closes, a paused game unpauses, and the screen goes black at
 	// once while the boot runs unseen (a few seconds on a slow machine), not the last picture held.
+	bool shape_restart = false;   // a new picture shape the game reads at boot, chosen in the menu
 	auto reset_game = [&](bool keep_settings = true, bool force_code = false) {
 		arcade_picture_pending = false;
 		arcade_next_picture = 0;
@@ -1587,9 +1593,12 @@ int main(int argc, char **argv)
 		SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
 		SDL_RenderClear(ren);
 		SDL_RenderPresent(ren);
+		shape_restart = false;
 		boot();
 		if (game_part.booted()) boot();   // (the service menu may have changed a setting the game reads at boot)
+		apply_aspect();
 		make_texture();
+		present_shape();
 		show_frame = false;
 	};
 	auto save_settings = [&] { return cfg.save(settings_path, game_part); };
@@ -1614,6 +1623,9 @@ int main(int argc, char **argv)
 	auto set_shape = [&](int v) {
 		aspect_i = cfg.aspect = v; cfg_dirty = true;
 		sync.reset();
+		// (the game's own widescreen setting: a restart, once the menu closes)
+		shape_restart = game_part.set_picture_shape(ASPECTS[v]);
+		if (shape_restart && !menu.is_open()) { reset_game(); return; }
 		apply_aspect(); make_texture(); present_shape(); redraw_if_stopped();
 	};
 	auto set_fullscreen = [&](bool on) {
@@ -1666,7 +1678,8 @@ int main(int argc, char **argv)
 			[&](int) { cfg.graphics = !cfg.graphics; cfg_dirty = true; } });
 #endif
 		p.items.push_back({ "Picture shape",
-			"Fit the window fills any screen shape. The other shapes add black bars to keep their shape; 4:3 is the original arcade screen. (F6)",
+			std::string("Fit the window fills any screen shape. The other shapes add black bars to keep their shape; 4:3 is the original arcade screen. ") +
+				game_part.picture_shape_help() + "(F6)",
 			[&] { return std::string(aspect_i ? ASPECT_NAMES[aspect_i] : "Fit the window"); },
 			[&](int d) { set_shape(wrap(aspect_i + d, N_ASPECTS)); } });
 		p.items.push_back({ "Frame rate",
@@ -2163,9 +2176,9 @@ int main(int argc, char **argv)
 			else if (menu.handle_event(e)) continue;
 			else if (e.type == SDL_EVENT_GAMEPAD_ADDED || e.type == SDL_EVENT_GAMEPAD_REMOVED) open_pads();
 			else if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED && ASPECTS[aspect_i] <= 0) {
-				float before = m.aspect();
+				float before = shape_now;
 				apply_aspect();
-				if (m.aspect() != before) { sync.reset(); make_texture(); present_shape(); redraw_if_stopped(); }
+				if (shape_now != before) { sync.reset(); make_texture(); present_shape(); redraw_if_stopped(); }
 			}
 			else if (e.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN || e.type == SDL_EVENT_WINDOW_LEAVE_FULLSCREEN) {
 				menu.refresh();
@@ -2205,7 +2218,7 @@ int main(int argc, char **argv)
 				if (save_settings()) cfg_dirty = false;   // (else tried again at the next close, and at quit)
 			}
 			// the game's settings it reads as it starts: a restart if one is different
-			if (const auto r = game_part.menu_closed(); r != game_host::restart::none)
+			if (const auto r = game_part.menu_closed(); r != game_host::restart::none || shape_restart)
 				reset_game(true, r == game_host::restart::game_and_code);
 			pstate[0] = pstate[1] = pad_state{};   // the button that closed it isn't a move
 			pstate[0].back_was = pstate[1].back_was = true;

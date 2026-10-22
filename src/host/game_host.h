@@ -52,6 +52,15 @@ public:
 	// After each boot (a reset); true: boot again (a setting the game reads at boot was put back).
 	virtual bool booted() { return false; }
 
+	// The chosen picture shape (width / height; 0: fit the window), before the first boot and on every
+	// change. True: the running game must restart for it (a setting it reads at boot).
+	virtual bool set_picture_shape(float) { return false; }
+	// True: the game draws the shape itself, squeezed into its 4:3 picture for a widescreen monitor,
+	// so the host stretches that picture instead of widening it.
+	virtual bool picture_stretched() const { return false; }
+	// Added to the Picture shape help: what the game does with a shape (ending with a space).
+	virtual const char *picture_shape_help() const { return ""; }
+
 	// The Game page's play style (PC or Arcade): only for a game that has it.
 	virtual bool has_play_style() const { return false; }
 	// The game's own settings for Arcade mode, kept as they are now (before a restart and at quit).

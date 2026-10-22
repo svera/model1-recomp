@@ -43,6 +43,12 @@ Every game has the same make targets, made from its `src/games/<game>/game.mk`: 
 Release packaging is enabled only for Virtua Racing on macOS, Windows, and Linux. Each platform's
 `package.sh` builds VR by default; explicitly requesting `vf` is rejected. VF development targets remain available.
 
+Publishing a GitHub release (including a prerelease) runs [Package release](.github/workflows/release.yml)
+from its tag. It builds the universal macOS ZIP, Windows x86-64 ZIP, and Steam Deck / Linux x86-64
+tarball in parallel, then attaches all three archives to that release once every build succeeds.
+Draft releases do not trigger builds. The release tag supplies the package version; rerunning the
+workflow replaces assets with the same names. No ROMs are needed or included.
+
 Useful shared checks:
 
 ```sh

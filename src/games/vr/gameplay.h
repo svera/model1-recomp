@@ -21,6 +21,9 @@ inline constexpr int FREE_PLAY = 26;
 int coin_setting(model1 &machine);
 bool set_coin_setting(model1 &machine, int value);
 bool enable_standalone_car_color(model1 &machine);
+// The test menu's MONITOR TYPE (EEPROM byte 0x0b, RAM 0x40dc8b): 0 4:3 NORMAL, 1 16:9 WIDE; -1 invalid.
+int monitor_type(model1 &machine);
+bool set_monitor_type(model1 &machine, int value);
 class camera_cycle
 {
 public:
