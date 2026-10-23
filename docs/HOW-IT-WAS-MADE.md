@@ -545,6 +545,278 @@ close behind on the bridge, past the red car in the tunnel), with either roundin
 was from MAME, which like a fresh board shows the first. The port follows SEGA AGES: VR's gameplay
 hooks set the rank index to 15 right after boot.
 
+## Bringing up Star Wars Arcade
+
+Star Wars Arcade (SWA) was added in stages: load the board correctly, boot on the interpreter,
+check the cabinet's controls, implement the missing sound board, play repeatable games, then
+recompile them. Reusing Virtua Racing's game registration and build rules was useful; copying its
+assumptions about controls, code addresses or gameplay state was not.
+
+### ROM layout before game-specific workarounds
+
+The runtime ZIP loader and the development region builder must construct the same memory. SWA's
+program is loaded at `0xf80000` and mirrored at `0x000000` and `0x080000`; the sound program is
+byte-swapped and reloaded at `0x80000`. These are explicit operations in both loaders, not padding
+that happens to contain a useful copy. The profile and ROM tables also include the TGP program,
+polygon/data ROMs and the extra sound board's Z80 and MPEG data.
+
+The supported archive is MAME 0.280's US set, with `315-5711.bin` CRC32 `c5ddb8fc`. That release
+marks the TGP program `BAD_DUMP`. Checking its checksum establishes which dump was tested, not
+that its geometry is hardware-perfect. Newer TGP dumps and the Japanese `swaj` program are not
+covered by these tables.
+
+### Use the geometry program already in the archive
+
+The archive contains a program for the MB86233, so a complete SWA-specific high-level geometry
+simulation was not the starting point. The V60 interpreter runs the game while the existing
+MB86233 core executes the supplied TGP program. SWA has no geometry HLE implementation.
+
+Reaching a title screen alone would not establish that the FIFO or scheduling works. The boot
+test repeats two 1,800-frame cold boots and compares CPU/picture checkpoints, polygon counts,
+TGP work and interrupt counts. Every frame checks conservation of input/output FIFO words,
+queue peaks within 16 words, no empty-result waits and no TGP execution-limit hits. Input waits
+are expected: the geometry program waits when the CPU has not supplied more commands.
+Separate timing checks exercise the timer at period times 2,048 clocks and vblank at line 384
+of 424, and the ROM-backed boot checks the audio sample count against elapsed board time.
+
+With this set, the first polygons appear at frame 1106. By frame 1800 the TGP has consumed
+24,559 input words and returned 24,750 output words, with both queues drained. Those are useful
+reproducibility observations, not a measurement of cabinet latency: the TGP still runs on demand,
+not on a cycle-accurate parallel scheduler.
+
+### Let the cabinet's input test settle the wiring
+
+The two seats are Pilot and Gunner, not two copies of VR's driving controls. Both seats' firing
+buttons share the I/O board's player 1 byte: Pilot laser/torpedo are `0x01`/`0x02`, Gunner
+laser/torpedo `0x04`/`0x08`, and the Pilot's view button is `0x10`. Start is system bit `0x10`;
+the host's two Start controls operate that same cabinet button. Routing player two to a separate
+player byte would silently lose the Gunner's buttons.
+
+The Pilot's stick uses ADC channels 0 and 1, throttle channel 2, and the Gunner's stick channels
+4 and 5. The ROM-backed control test uses the host's routing and analog conversion, then checks
+the cells and markers on the game's own INPUT TEST pages. This tests what the game receives,
+not merely whether the host changed a byte.
+
+The factory-calibrated stick range is 27-227, centred on 127; throttle is 28 (FAST) to 228
+(SLOW), centred on 128. MAME's throttle range stops at 200, which only reaches about -72 on
+the game's test; the host uses the full calibrated travel. Out-of-range values can produce
+INVALID VALUE rather than extra travel. X is reversed by the hardware mapping; Y follows the
+cabinet, so forward dives, with an optional host inversion. The cabinet's recalibration procedure
+has not been tested: the host mapping assumes the factory calibration.
+
+### The missing hardware was the MPEG sound board
+
+SWA retains the Model 1 sound board (68000, YM3438 and two MultiPCMs), but adds Sega's
+Z80 Digital Sound Board. Loading its ROMs without implementing the board cannot produce its
+music. The port follows MAME's `dsbz80.cpp` and MPEG Layer I/II decoder, keeping their attribution
+in [the MAME source inventory](../third_party/mame/README.md).
+
+Every byte sent on the 68000 sound board's serial link also reaches the DSB's i8251 receiver:
+31.25 kbaud, one byte per 320 microseconds. The Z80 program interprets the commands and controls
+start/end addresses, looping, volume and pan; it is not replaced with a host-side song lookup.
+Addresses can be latched while a stream is playing, which matters for loops and multi-part music.
+The board is instantiated only when its `mpegcpu` and `mpeg` regions are present, leaving VR
+and VF on their existing sound path. Its 32 kHz output is resampled into the 48 kHz host mix
+and follows the music-volume control.
+
+A listening check found a bug that successful MPEG decoding did not catch. The resampler's last
+interpolation in a scanline slice could need a source sample the Z80 had not delivered yet:
+samples arrive at instruction boundaries. Keeping the resampler two source samples behind
+production fixed the distortion. Before that, signal-to-error was only about 20 dB. The attract
+test now compares the mixed theme against the stream's own decode at the board's volume:
+over 60 dB required, about 68 dB measured. A separate comparison with ffmpeg's MP2 decoder
+agreed within 2 LSB. Comparing the mixer to its own decoder checks the resampling and mixing;
+the independent decoder comparison checks a different part of the chain.
+
+The theme is not expected immediately at boot. The earlier Star Destroyer fly-by uses the
+ordinary sound chips; the DSB receives stop commands. Command `01` starts the stereo theme at
+`0x334000` around frame 3202, with the opening crawl's logo. Stub-program tests cover UART
+pacing, receiver enable/overrun and register latching; ROM-backed tests cover the real trigger,
+1,152 samples per MPEG frame and the mixed audio. Gameplay tests also require an in-game
+stream outside the theme range and a loop without another trigger.
+
+One early hypothesis was that the main game waited for sound during boot. A silent run disproved
+that: its RAM matches the sound-enabled run through frame 8000. Headless coverage and lockstep
+can therefore run silently, while separate gameplay tests exercise the sound-enabled path.
+Hardware verification remains open for the Z80 clock (MAME's 4 MHz estimate), the volume
+register's top bit, ignored ports `0xea`/`0xeb`, and the final music/effects balance.
+
+### Observe game state instead of borrowing VR's addresses
+
+The first gameplay probes paired screenshots with RAM observations. VR's camera/mode addresses
+do not identify SWA gameplay: the shared camera-based `past_boot()` check stays false even when
+SWA is flying. Rather than invent camera addresses to satisfy that assertion, the script checks
+state the screen helped identify.
+
+| Battery RAM address | Observation used by the checks |
+|---|---|
+| `0x40f008` | Sequence: 1-2 attract, 11-13 credited/playing, 14 game over and rankings |
+| `0x40f334` | Time remaining, little-endian 16-bit, in 1/30 second units |
+| `0x40f410`, `0x40f510` | Pilot and Gunner scores, 32-bit BCD |
+| `0x40f100` | Ten Pilot ranking entries, eight bytes each |
+| `0x40f150` | Ten team ranking entries, twelve bytes each |
+
+The script inserts coins at frames 1300 and 1340 and opens the mode menu with Start at 1400.
+Centred selects PILOT; pulling back during mode selection chooses PILOT & GUNNER, which needs
+a third credit. Start confirms the mode and mission. Flying uses a seeded random sequence of
+stick targets, eased toward each target, with throttle changes, laser bursts and torpedoes.
+All of this is cabinet input: it does not write a score or force a gameplay state.
+
+The checks require credit acceptance, the expected mission's initial clock, a decreasing flight
+clock, a Pilot score, game over and return to attract. The Gunner run must also score for that
+seat. Ranking checks happen on return to attract, after name entry is finished, not as soon as
+game over starts. The team uses a separate table and the BCD sum of both players' scores;
+looking for the Pilot's score in the solo table was the wrong test.
+
+With seed 12345, Rebel Attack's flight starts at frame 3206. The solo script reaches
+game over around frame 16,700 and returns to attract around 17,700. The original centred-Gunner
+run finished at similar times; moving its aim changes the outcome and extends the run (below). These runs verify a final
+score in the rankings, not deliberate entry of a particular name. The full scenarios run for
+22,000 frames. Minimum-length enforcement is enabled with checks, not for short diagnostic runs.
+
+### Training needed a different ending check
+
+The `training` scenario uses the same Pilot controls, but pulls the stick back during frames
+1510-1539 in the mission menu. Screenshots confirmed the highlighted Training choice and
+TRAINING MODE in flight. The initial clock gives a persistent automated discriminator:
+120 seconds for Training, versus 180 for Rebel Attack. Merely reaching a flight would have
+allowed a broken selector to pass by playing the default mission.
+
+The raw clock includes a fractional part, so the mission check compares whole seconds rather
+than demanding exactly `120 * 30` or `180 * 30`. In the observed Training run the initial
+value was 3615, not 3600. Flight starts at frame 3506; the Pilot scores, game over is reached
+at 10732 with time still left, and attract returns at 10736.
+
+Reusing Rebel Attack's ranking requirement initially failed. Screenshots showed the Training
+ending goes through GAME OVER without name entry; the final score is not added to the normal
+ranking table. Training now checks that both ranking tables remain unchanged. The baseline is
+captured after boot, when credit acceptance is observed, not at frame one: cold boot initializes
+the tables, so comparing with uninitialized battery RAM would falsely report a Training change.
+This verifies an ended Training run, not successful completion of all its objectives.
+
+### Native recompilation: low ROM and unusual returns
+
+SWA executes from `0x0c0000-0x0fffff`, outside the analyser's original code ranges. Adding
+`0x000000-0x0fffff` to code discovery enabled the shared recompiler. VR and VF output was checked
+with and without the change using identical hints; their listings and maps were unchanged.
+Regenerating coverage can independently change a map, so a comparison using different coverage
+recordings would not isolate the analyser change.
+
+The next failures were missing entries, not divergent V60 arithmetic. SWA sometimes pushes a
+return address and branches instead of making an ordinary call. Its reset pushes a PSW and
+the next address, then runs `RETIS`. In native code, a return unwinds a host call frame; when
+there is no matching caller, dispatch eventually reaches the runtime, which needs that destination
+as an entry. The first examples were `0x0fff75` and `0x0ff90c`.
+
+A special analyser rule for returns to the next instruction was tried and removed. Treating
+every pushed PC-relative address as a function would also catch data addresses and change the
+other games. The existing explicit-hint mechanism was sufficient: the runtime logs missing
+destinations as `entry` lines in `build/cov/swa/runtime_entries.txt`; the next recompile includes
+them. Recompile, run, collect and repeat until strict lockstep reports no interpreter fallbacks.
+Adding entries can expose further destinations formerly hidden inside an interpreted region,
+so one successful collection pass is not necessarily the last.
+
+The shipped `assets/games/swa/swa_map.txt` contains addresses, not ROM code. Both `make swa` and
+`make swa-native` use startup-native execution. The generated-C++ build remains a development
+alternative. All three scenarios (default Rebel Attack, `gunner`, `training`) pass 22,000 frames
+of strict native and generated-C++ lockstep: CPU registers after every scanline, battery/work
+RAM and rendered frames after every frame, with no runtime interpreter fallback. This does not
+mean every opcode is emitted directly as host instructions; supported handler calls remain
+part of the recompiler's normal implementation.
+
+Manual play extended the map beyond scripted coverage: successive logged sessions found 94
+and 51 previously missing addresses. Each expansion retained existing entries and was checked
+again against the scripted scenarios. `REC_VERBOSE=1` reports new fallback destinations; the
+entry file collects them automatically, provided its parent directory exists. These logs record
+addresses, not the player's inputs, so they cannot replay the session or prove that newly covered
+manual paths match the interpreter. Likewise, zero GPU errors in a log is not a CPU/GPU image
+comparison when that comparison was disabled.
+
+### Automating the Gunner's aim
+
+The original team script fired the Gunner's weapons but left the stick centred. A Gunner score
+proved that firing and hits worked; it did not prove either aiming axis worked. The shared
+`script_inputs` only had room for three analog channels, whereas the Gunner uses ADC 4 and 5.
+The input array now covers all eight channels, with every unused channel defaulting to -1
+(leave unchanged). The headless runner, coverage collector, lockstep and tests all apply the
+whole array, separately from the three digital input ports.
+
+This change had a subtle compatibility trap: assigning three values to a larger `std::array`
+zero-initializes the remaining elements rather than retaining their -1 defaults. VR's qualifying
+driver used those assignments. It now sets only channels 0-2 explicitly, preserving inactive
+channels and its existing steering/pedal sequence.
+
+The team scenario holds the Gunner centred until frame 3700, then cycles each axis to its low
+and high endpoints for 120 frames, keeping the other centred: right, left, down, up. It uses
+no extra random numbers, so the Pilot's seeded steering and throttle are unchanged. Checks
+require both scores and all four directions in the calibrated Gunner input fields, signed Y/X
+at `0x40f340`/`0x40f342`. Controlled observations gave Y endpoints -4550/+4550 and X
+-6400/+6400, zero at centre. The gameplay checks demand substantial travel in both signs,
+not merely a one-bit change.
+
+Those RAM fields alone would still only establish that the game received the axes. A separate
+regression compares five cold-boot team runs, identical until frame 3700: neutral, X low, X high,
+Y low and Y high. For the controlled interval the Pilot is centred and both players release
+their firing buttons. At frame 4000 the Gunner's yellow-green reticle is identified separately
+from the green Pilot label. Low/high X moves it right/left by 141 pixels, and low/high Y moves
+it down/up by 93. The test requires over 100 horizontal or 70 vertical pixels, at most two
+pixels of cross-axis displacement, and an identical picture outside small bounds around the
+old and new reticles. Thus swapped axes, wrong inversion, ignored channels and accidentally
+steering the Pilot cannot pass just by producing a score.
+
+ROM-free input-sequence checks also require repeatable sweeps, unchanged Pilot flying controls
+and unused channels left at -1. `test-swa-gameplay` includes the on-screen isolation check and
+now runs the moving-Gunner scenario with sound on native code too, requiring no interpreter
+fallback. With seed 12345, four directions have been observed by frame 4062, game over comes
+at 19614 and attract at 20557, still inside the 22,000-frame test. Its team score is checked in
+the rankings as before. The coverage recording is updated for this changed run, and strict
+native and generated-C++ lockstep cover it.
+
+### The name-entry priority bug scripts did not notice
+
+A manual screenshot showed the rotating yellow name-entry letters broken into fragments over
+the background photograph. The renderer's above-HUD pass (display-list command `0x41`) used a
+brightness mask made from the whole composited picture. That included the photograph: bright
+background pixels were incorrectly restored over foreground letters, while dark areas let them
+through. A gameplay-state test could pass with that picture.
+
+The mask now samples only the composited category-1 HUD tile layers (7, 5, 3 and 1). Bright HUD
+features still mask foreground polygons, preserving cockpit struts and radar lines; the photograph
+and ordinary 3D scene cannot. This fixes the mask's source without claiming the remaining
+brightness-based rule is a hardware-accurate priority model.
+
+The reproduced name-entry frame regained 3,802 pixels, and a sampled gameplay/cockpit frame was
+pixel-identical before and after. Synthetic tests cover bright backgrounds, bright HUD features
+and dark HUD pixels at 1x/2x and 4:3/16:9. The ROM-backed test reaches real name entry at frame
+15750 and checks at 1x and 2x that the photograph does not mask its yellow letters. SWA, VR and
+VF gameplay regressions passed, and the desktop hosts were rebuilt.
+
+### What the tests establish, and what remains
+
+The main local checks are:
+
+- `make test-swa-profile test-swa-romset`: profile and loader layout.
+- `make test-swa-boot`: repeated interpreter boot, FIFO invariants, IRQ timing and audio pacing.
+- `make test-swa-controls`: button routing and analog ranges against the game's input test.
+- `make test-swa-dsb`: serial receiver, MPEG controls, real music trigger and audio comparison.
+- `make test-swa-gameplay`: all three scenarios with sound, silent/sound RAM agreement, and
+  native runs with no interpreter fallback; also deterministic Gunner inputs and on-screen
+  independent aiming.
+- `make test-model1-video test-swa-video`: synthetic HUD priority and real name-entry rendering.
+- `make swa-native-lockstep swa-lockstep`: all three complete scenarios against the interpreter.
+
+These are ROM-backed local checks where applicable, not evidence that every cabinet behaviour
+or every mission branch has been validated. The Gunner's buttons and axes are checked in the
+input test and scripted play, but a checked continue/restart remains to be added.
+Later stages and continue screens have been observed without comprehensive objective
+checks. Camera/mode RAM is still unidentified, so boot skipping and SWA-specific widescreen
+behaviour are not established. Release packaging remains VR-only.
+
+The useful pattern was to keep three claims separate: the program runs reproducibly, native code
+matches the interpreter, and the result matches the cabinet. Each needs different evidence.
+An input test, a decoder comparison, a frame-level priority regression and a CPU lockstep are
+complementary; none substitutes for the others.
+
 ## Where to look
 
 - `src/rt/native.cpp`, `src/rt/analyse.cpp`: the start-up recompiler and code discovery. `assets/games/vf/vf_map.txt` is its
@@ -556,4 +828,8 @@ hooks set the rank index to 15 right after boot.
 - `src/gpu/`, `src/machine/model1_gpu.cpp`: the GPU renderer (Metal, SDL_GPU and their shaders).
 - `tools/model1run.cpp`, `tools/model1script.cpp`: the headless runner and the scripted test harness. `tools/model1cov.cpp` makes
   the coverage runs the map comes from.
+- `src/games/swa/`, `tests/games/swa/`: SWA's profile, ROM layout, controls, scripted scenarios and
+  ROM-backed checks. `assets/games/swa/swa_map.txt` is its native address map.
+- `src/machine/dsbz80.*`, `src/machine/mpeg_audio.*`: SWA's extra sound board and MPEG decoder.
+- `tests/model1_video_test.cpp`: shared rendering regressions, including SWA's name-entry priority.
 - `git log`: each commit message explains what changed, why, and how it was checked.

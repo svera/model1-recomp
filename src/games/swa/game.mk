@@ -1,10 +1,10 @@
-# Native recompilation from assets/games/swa/swa_map.txt (strict lockstep, both scenarios). Scripted play: src/games/swa/script.cpp.
+# Native recompilation from assets/games/swa/swa_map.txt (strict lockstep, all scenarios). Scripted play: src/games/swa/script.cpp.
 GAMES += swa
 swa_HOST_REC = native
 # the scripted runs model1cov records as hints for the recompile (make swa-coverage)
-swa_COV_SCENARIOS = default gunner
+swa_COV_SCENARIOS = default gunner training
 swa_COV_FRAMES ?= 22000
-swa_LOCK_SCENARIOS = default gunner
+swa_LOCK_SCENARIOS = default gunner training
 swa_LOCK_FRAMES ?= 22000
 
 $(OBJ)/tests/games/swa/profile_test.o $(OBJ)/tests/games/swa/controls_test.o $(OBJ)/tests/games/swa/dsb_test.o: CXXFLAGS += $(SDL_CFLAGS)

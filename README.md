@@ -132,10 +132,10 @@ make test-swa-profile test-swa-romset
 make test-swa-boot                  # two 1800-frame cold boots; needs model1io.zip too
 make test-swa-controls              # buttons and axes against the game's own input test
 make test-swa-dsb                   # the Digital Sound Board, stubbed and in the attract sequence
-make test-swa-gameplay              # scripted games, PILOT and PILOT & GUNNER, to game over and back
+make test-swa-gameplay              # Rebel Attack (both seats) and Training, to game over and back
 make test-swa-video                 # name-entry letters over the photograph, at 1x and 2x
 make swa-coverage                   # record those runs as hints for the recompile
-make swa-native-lockstep            # native code against the interpreter, both scenarios, 22,000 frames
+make swa-native-lockstep            # native code against the interpreter, all scenarios, 22,000 frames
 make swa-lockstep                   # the same for the generated C++
 build/bin/swa --arcade --scale 1 --aspect 4:3
 ```
@@ -163,12 +163,12 @@ and checks that the photograph does not cut holes in the letters.
 
 SWA runs its program from the low ROM copy (`0x0c0000`–`0x0fffff`), so the code analyser
 (`src/rt/analyse.cpp`) treats `0x000000`–`0x0fffff` as code as well as Model 1's usual ranges; VR's
-and VF's recompiles are unchanged by it. `assets/games/swa/swa_map.txt` is made from both scripted
+and VF's recompiles are unchanged by it. `assets/games/swa/swa_map.txt` is made from the scripted
 runs (`make swa-coverage`) and the entries the runtime noted when native code fell back to the
 interpreter (`build/cov/swa/runtime_entries.txt`). Most of those are pseudo-calls: the game pushes a
 return address and branches (and its reset pushes one and runs `RETIS`), so the code returned to has
 no caller in the native code and must be an entry of its own. The map was regenerated until the
-lockstep noted no more; `swa-native-lockstep` and `swa-lockstep` now run both scenarios to frame
+lockstep noted no more; `swa-native-lockstep` and `swa-lockstep` run all three scenarios to frame
 22,000 with `--strict` (no fallback) and the same registers and RAM as the interpreter, and
 `test-swa-gameplay` plays the default scenario natively with sound. Code the scripts never reach
 (other missions' branches, the test menu) may still fall back to the interpreter, which is correct
@@ -176,7 +176,7 @@ but slower, and is noted for the next map.
 
 The shipped map also includes entries collected during manual play. These remove the recorded
 fallbacks, but the console log does not record inputs, so it cannot replay or validate that manual
-session. Both scripted scenarios are rechecked in strict native lockstep after expanding the map.
+session. All scripted scenarios are rechecked in strict native lockstep after expanding the map.
 
 #### SWA controls
 
@@ -244,28 +244,48 @@ and 1340; SWA needs 2 credits), presses Start to open the mode menu, confirms PI
 Rebel Attack mission with Start, then flies with a seeded random stick and throttle, firing the
 lasers in bursts and a torpedo every five seconds. The `gunner` scenario inserts a third coin
 (PILOT & GUNNER needs 3 credits), pulls the stick back to pick that mode and fires the Gunner's
-buttons too; the Gunner's stick stays centred (the script's inputs cover analog channels 0–2).
+buttons too. From frame 3700 the Gunner's stick repeats right, left, down and up, holding each for
+120 frames with the other axis centred. Channels 4/5 carry these inputs independently of the
+Pilot's seeded controls on 0–2; unused channels remain unchanged.
+The `training` scenario stays in PILOT mode, then pulls the stick back on frames 1510–1539 to
+select Training before confirming the mission. It uses the same seeded flying and firing.
 
-With checks on, a run must be credited, start the flight (the clock counting down from 180 s), score
-(and, for `gunner`, the Gunner score), reach game over, return to attract, and leave the final score
-in the rankings. With seed 12345 the flight starts at frame 3206, the time runs out at about 16,700
-and attract returns at about 17,700. The checks read battery RAM found by watching runs against the
+With checks on, a run must be credited, select the expected mission (the initial clock shows
+180 s for Rebel Attack, 120 s for Training), start the flight (the clock counting down), score
+(and, for `gunner`, the Gunner score and all four aim directions), reach game over and return to attract. Rebel Attack must leave
+the final score in the rankings. With seed 12345 its flight starts at frame 3206; the solo run reaches
+game over at frame 16782 and attract at 17725. The moving-Gunner run reaches those at 19614 and
+20557. Training instead must leave the rankings unchanged: this run
+has no name entry, reaches game over at frame 10732 and returns to attract at 10736, after starting
+the flight at 3506. The checks read battery RAM found by watching runs against the
 screen, not from the program's code:
 
 | Address | Observed meaning |
 |---|---|
 | `0x40f008` | sequence: 1–2 attract, 11–13 credited and playing, 14 game over and rankings |
 | `0x40f334` | time left, 16-bit, in 1/30 s (the HUD's TIME) |
+| `0x40f340`, `0x40f342` | calibrated Gunner Y/X inputs, signed 16-bit |
 | `0x40f410`, `0x40f510` | Pilot and Gunner scores, 32-bit BCD |
 | `0x40f100` | PILOT rankings: ten 8-byte entries, BCD score and name |
 | `0x40f150` | PILOT & GUNNER rankings: ten 12-byte entries, the team's total and both names |
 
-`test-swa-gameplay` runs both scenarios to frame 22,000 with sound. In the default run it also checks
+`test-swa-gameplay` runs all three scenarios to frame 22,000 with sound. In the default run it also checks
 that the DSB plays the in-game music during the flight (a looping stream outside the attract theme;
-it loops about every 3,340 frames) and that a silent run matches one with sound. The scripted runs end
-by the clock; later stages, the trench run and the continue screen have been seen in longer
-exploratory runs but are not checked. Last, it plays the default scenario again on native code from
+it loops about every 3,340 frames) and that a silent run matches one with sound. The scripted Rebel
+Attack runs end by the clock; Training ends earlier. Later stages, the trench run and the continue screen have been seen in longer
+exploratory runs but are not checked. Last, it plays all three scenarios again on native code from
 the shipped map, with no interpreter fallback.
+
+The gameplay test also compares five controlled runs: centred Gunner, then each axis at its two
+extremes with the Pilot centred and firing released. At frame 4000 the reticle must move over
+100 pixels horizontally or 70 vertically in the correct direction, without moving the other axis
+or changing the picture outside the old/new reticles. The observed shifts are ±141 and ±93 pixels.
+This checks independent in-game aiming, not just score or ADC delivery. To run this focused check:
+
+```sh
+make build/bin/swa_gameplay_test
+build/bin/swa_gameplay_test build/swa --aim
+```
 
 For headless screenshots and FIFO diagnostics:
 

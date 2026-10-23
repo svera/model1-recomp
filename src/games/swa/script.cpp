@@ -1,5 +1,5 @@
 // Star Wars Arcade's scripted play: attract, two coins (three for PILOT & GUNNER), the mode and
-// mission menus confirmed with Start, then seeded flying and firing until the shields or the time
+// mission menus confirmed with Start (Rebel Attack, or Training), then seeded flying and firing until the shields or the time
 // run out, the rankings and back to attract; with the checkpoints such a run must reach.
 //
 // The battery RAM the checks read was found by watching runs against the screen, not from the
@@ -7,10 +7,11 @@
 // rankings, then attract again), 0x40f334 the time left in 1/30 s (TIME on screen), 0x40f410 and
 // 0x40f510 the Pilot's and Gunner's scores (BCD), 0x40f100 the PILOT rankings (ten 8-byte entries:
 // BCD score, a name) and 0x40f150 the PILOT & GUNNER ones (ten 12-byte entries: the team's total,
-// both names).
+// both names). 0x40f340/0x40f342 are the signed Gunner Y/X inputs, observed against the reticle.
 #include "../script.h"
 #include "../../machine/model1.h"
 #include "profile.h"
+#include <algorithm>
 #include <cstdio>
 
 namespace game::swa {
@@ -18,30 +19,38 @@ namespace game::swa {
 namespace {
 
 constexpr uint32_t SEQUENCE = 0xf008, TIME = 0xf334, PILOT_SCORE = 0xf410, GUNNER_SCORE = 0xf510,
-	PILOT_RANKINGS = 0xf100, TEAM_RANKINGS = 0xf150;
+	PILOT_RANKINGS = 0xf100, TEAM_RANKINGS = 0xf150, GUNNER_Y = 0xf340, GUNNER_X = 0xf342;
 constexpr int RANKING_ENTRIES = 10, PILOT_RANKING_SIZE = 8, TEAM_RANKING_SIZE = 12;
 constexpr uint8_t SEQ_ATTRACT = 1, SEQ_PLAYING = 13, SEQ_GAME_OVER = 14;
 
-// the analog channels the script sets (channels 4-5, the Gunner's stick, stay centred)
-constexpr int STICK_X = 0, STICK_Y = 1, THROTTLE = 2;
+constexpr int STICK_X = 0, STICK_Y = 1, THROTTLE = 2, GUNNER_STICK_X = 4, GUNNER_STICK_Y = 5;
 constexpr int STICK_LOW = 27, STICK_CENTRE = 127, STICK_HIGH = 227;   // IO_PROFILE's travel
 
 // Inputs, by frame from power-on: the coins land in the attract's Star Destroyer fly-by; Start
 // opens the mode menu, the stick picks PILOT (centred) or PILOT & GUNNER (back), Start confirms it
-// and then the mission (Rebel Attack, the first).
+// and then the mission (Rebel Attack, the first; stick back selects Training).
 constexpr int COIN_FRAMES[] = { 1300, 1340, 1380 };
 constexpr int START_FRAMES[] = { 1400, 1490, 1560 };
 constexpr int SELECT_FROM = 1420, SELECT_TO = 1470, FLY_FROM = 1600, PRESS = 6;
+constexpr int MISSION_SELECT_FROM = 1510, MISSION_SELECT_TO = 1540;
+constexpr int GUNNER_AIM_FROM = 3700, GUNNER_AIM_HOLD = 120;
 
 class play final : public auto_play
 {
 public:
-	play(bool gunner, uint32_t seed, bool checks)
-		: m_gunner(gunner), m_rng(seed * 2654435761u + 1), m_checks(checks) {}
+	play(bool gunner, bool training, uint32_t seed, bool checks)
+		: m_gunner(gunner), m_training(training), m_rng(seed * 2654435761u + 1), m_checks(checks) {}
 
 	script_inputs frame(int f) override
 	{
 		script_inputs s;
+		if (m_gunner) {
+			s.analog[GUNNER_STICK_X] = s.analog[GUNNER_STICK_Y] = STICK_CENTRE;
+			if (f >= GUNNER_AIM_FROM) {
+				const int phase = ((f - GUNNER_AIM_FROM) / GUNNER_AIM_HOLD) % 4;
+				s.analog[phase < 2 ? GUNNER_STICK_X : GUNNER_STICK_Y] = phase % 2 ? STICK_HIGH : STICK_LOW;
+			}
+		}
 		for (int i = 0; i < (m_gunner ? 3 : 2); i++)
 			if (f >= COIN_FRAMES[i] && f < COIN_FRAMES[i] + PRESS) s.pressed[0] |= COIN;
 		for (int start : START_FRAMES)
@@ -49,6 +58,7 @@ public:
 		if (f < FLY_FROM) {
 			s.analog[STICK_X] = STICK_CENTRE;
 			s.analog[STICK_Y] = m_gunner && f >= SELECT_FROM && f < SELECT_TO ? STICK_HIGH : STICK_CENTRE;
+			if (m_training && f >= MISSION_SELECT_FROM && f < MISSION_SELECT_TO) s.analog[STICK_Y] = STICK_HIGH;
 			return s;
 		}
 		// flying: the stick eases towards a new random point every second or two, the throttle
@@ -87,9 +97,13 @@ public:
 				recorded = true;
 			}
 		};
-		if (!m_credited && f >= COIN_FRAMES[0] && sequence == SEQ_PLAYING)
+		if (!m_credited && f >= COIN_FRAMES[0] && sequence == SEQ_PLAYING) {
+			std::copy_n(ram.data() + PILOT_RANKINGS, m_initial_rankings.size(), m_initial_rankings.begin());
 			reached("credited", m_credited);
-		// the clock starts with the flight (180 s for Rebel Attack) and counts down
+		}
+		// The initial clock distinguishes Training (120 s) from Rebel Attack (180 s).
+		if (m_credited && !m_flying && time / 30 == unsigned(m_training ? 120 : 180))
+			reached(m_training ? "Training (120-second clock)" : "Rebel Attack (180-second clock)", m_mission);
 		if (m_credited && !m_flying && time != 0xffff && time != 0) {
 			if (m_last_time && time < m_last_time) reached("flight (time counting down)", m_flying);
 			m_last_time = time;
@@ -98,6 +112,15 @@ public:
 			reached("pilot's first hit", m_pilot_hit);
 		if (m_gunner && m_flying && !m_gunner_hit && score(m, GUNNER_SCORE) != 0)
 			reached("gunner's first hit", m_gunner_hit);
+		if (m_gunner && m_flying && !m_game_over) {
+			const int x = int16_t(ram[GUNNER_X] | ram[GUNNER_X + 1] << 8);
+			const int y = int16_t(ram[GUNNER_Y] | ram[GUNNER_Y + 1] << 8);
+			if (x < -4000) m_aim_directions |= 1;
+			if (x > 4000) m_aim_directions |= 2;
+			if (y < -3000) m_aim_directions |= 4;
+			if (y > 3000) m_aim_directions |= 8;
+			if (m_aim_directions == 15) reached("gunner aimed in all four directions", m_aimed);
+		}
 		if (m_flying && !m_game_over && sequence == SEQ_GAME_OVER) {
 			reached("game over", m_game_over);
 			m_final_pilot = score(m, PILOT_SCORE);
@@ -106,6 +129,12 @@ public:
 		// back in attract the name entry is over: PILOT ranks the Pilot's score, PILOT & GUNNER the
 		// team's total
 		if (m_game_over && !m_attract && sequence == SEQ_ATTRACT) {
+			if (m_training) {
+				if (!std::equal(m_initial_rankings.begin(), m_initial_rankings.end(), ram.data() + PILOT_RANKINGS))
+					return "SWA Training changed the Rebel Attack rankings";
+				reached("attract after Training (rankings unchanged)", m_attract);
+				return {};
+			}
 			const uint32_t table = m_gunner ? TEAM_RANKINGS : PILOT_RANKINGS;
 			const int size = m_gunner ? TEAM_RANKING_SIZE : PILOT_RANKING_SIZE;
 			const uint32_t final_score = m_gunner ? bcd_add(m_final_pilot, m_final_gunner) : m_final_pilot;
@@ -127,10 +156,12 @@ public:
 	std::string finish() override
 	{
 		if (!m_checks) return {};
-		if (!(m_credited && m_flying && m_pilot_hit && m_game_over && m_ranked && m_attract))
+		if (!(m_credited && m_mission && m_flying && m_pilot_hit && m_game_over && (m_training || m_ranked) && m_attract))
 			return "SWA scenario did not reach every required checkpoint";
 		if (m_gunner && !m_gunner_hit)
 			return "SWA gunner scenario: the Gunner never scored";
+		if (m_gunner && !m_aimed)
+			return "SWA gunner scenario: the Gunner did not aim in all four directions";
 		return {};
 	}
 
@@ -162,23 +193,25 @@ private:
 	}
 	int rnd(int k) { m_rng = m_rng * 1103515245 + 12345; return int((m_rng >> 16) % unsigned(k)); }
 
-	const bool m_gunner;
+	const bool m_gunner, m_training;
 	uint32_t m_rng;
 	const bool m_checks;
 	int m_next_turn = 0, m_target_x = STICK_CENTRE, m_target_y = STICK_CENTRE, m_x = STICK_CENTRE,
 		m_y = STICK_CENTRE, m_throttle = 60;
 	unsigned m_last_time = 0;
+	unsigned m_aim_directions = 0;
 	uint32_t m_final_pilot = 0, m_final_gunner = 0;
-	bool m_credited = false, m_flying = false, m_pilot_hit = false, m_gunner_hit = false,
-		m_game_over = false, m_ranked = false, m_attract = false;
+	std::array<uint8_t, RANKING_ENTRIES * (PILOT_RANKING_SIZE + TEAM_RANKING_SIZE)> m_initial_rankings{};
+	bool m_credited = false, m_mission = false, m_flying = false, m_pilot_hit = false, m_gunner_hit = false,
+		m_game_over = false, m_ranked = false, m_attract = false, m_aimed = false;
 };
 
 }
 
 std::unique_ptr<auto_play> make_auto_play(const std::string &scenario, uint32_t seed, bool checks)
 {
-	if (!scenario.empty() && scenario != "gunner") return nullptr;
-	return std::make_unique<play>(scenario == "gunner", seed, checks);
+	if (!scenario.empty() && scenario != "gunner" && scenario != "training") return nullptr;
+	return std::make_unique<play>(scenario == "gunner", scenario == "training", seed, checks);
 }
 
 }

@@ -60,10 +60,10 @@ struct model1_video_test
 		assert(play);
 		for (int f = 1; f <= 15750; f++) {
 			const auto in = play->frame(f, m);
-			for (int c = 0; c < 3; c++) {
+			for (size_t c = 0; c < in.analog.size(); c++)
 				if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
+			for (size_t c = 0; c < in.pressed.size(); c++)
 				m.m_inputs[c] = uint8_t(~in.pressed[c]);
-			}
 			m.run_frame();
 		}
 		for (int scale : { 1, 2 }) {
@@ -208,11 +208,12 @@ struct model1_video_test
 		for (int f = 1; f <= 6000; f++) {
 			if (racing) {
 				const auto input = play->frame(f);
-				for (model1 *m : { &arcade, &full })
-					for (int c = 0; c < 3; c++) {
+				for (model1 *m : { &arcade, &full }) {
+					for (size_t c = 0; c < input.pressed.size(); c++)
 						m->m_inputs[c] = uint8_t(~input.pressed[c]);
+					for (size_t c = 0; c < input.analog.size(); c++)
 						if (input.analog[c] >= 0) assert(m->set_analog_input(c, uint8_t(input.analog[c])));
-					}
+				}
 			}
 			arcade.run_frame();
 			full.run_frame();
@@ -548,10 +549,10 @@ struct model1_video_test
 		};
 		for (int f = 1; f <= 4500; f++) {
 			const auto inputs = play->frame(f);
-			for (int c = 0; c < 3; c++) {
+			for (size_t c = 0; c < inputs.analog.size(); c++)
 				if (inputs.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(inputs.analog[c])));
+			for (size_t c = 0; c < inputs.pressed.size(); c++)
 				m.m_inputs[c] = uint8_t(~inputs.pressed[c]);
-			}
 			if (f == 3300) m.on_instruction = trace;
 			m.run_frame();
 			const auto error = play->check(f, m);
@@ -646,10 +647,10 @@ struct model1_video_test
 		size_t gauge_pixels = 0, go_pixels = 0;
 		for (int f = 1; f <= 4800; f++) {
 			const auto in = play->frame(f, m);
-			for (int c = 0; c < 3; c++) {
+			for (size_t c = 0; c < in.analog.size(); c++)
 				if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
+			for (size_t c = 0; c < in.pressed.size(); c++)
 				m.m_inputs[c] = uint8_t(~in.pressed[c]);
-			}
 			m.run_frame();
 			const uint8_t phase = m.work_ram()[0x1138];
 			if (phase != 0x12 && phase != 0x14) continue;
@@ -1311,10 +1312,10 @@ struct model1_video_test
 		size_t checked = 0, handoffs = 0;
 		for (int f = 1; f <= 20100; f++) {
 			const auto in = play->frame(f, m);
-			for (int c = 0; c < 3; c++) {
+			for (size_t c = 0; c < in.analog.size(); c++)
 				if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
+			for (size_t c = 0; c < in.pressed.size(); c++)
 				m.m_inputs[c] = uint8_t(~in.pressed[c]);
-			}
 			m.run_frame();
 			if (f < 19900) continue;
 			for (double fraction : { .25, .75 }) {

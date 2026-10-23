@@ -55,7 +55,7 @@ static void scripted_inputs()
 	assert(qualifying->frame(6000).pressed[0] == 0x01);
 	assert(qualifying->frame(6060).pressed[0] == 0);
 	assert(qualifying->frame(6120).pressed[0] == 0x10);
-	assert((qualifying->frame(6130).analog == std::array<int, 3>{ 0x80, 0xff, 0x30 }));
+	assert((qualifying->frame(6130).analog == std::array<int, 8>{ 0x80, 0xff, 0x30, -1, -1, -1, -1, -1 }));
 	auto unchecked = game::make_auto_play(title, "qualifying", 12345, false);
 	assert(unchecked && unchecked->min_frames() == 0 && unchecked->finish().empty());
 	assert(unchecked->frame(6130).analog == qualifying->frame(6130).analog);
@@ -449,13 +449,14 @@ static void rom_lod(const char *dir, bool native)
 	};
 	for (int f = 1; f <= 4800; f++) {
 		const auto inputs = play->frame(f);
-		for (int c = 0; c < 3; c++) {
+		for (size_t c = 0; c < inputs.analog.size(); c++) {
 			if (inputs.analog[c] >= 0) {
 				assert(arcade.set_analog_input(c, uint8_t(inputs.analog[c])));
 				assert(full.set_analog_input(c, uint8_t(inputs.analog[c])));
 			}
-			arcade.m_inputs[c] = full.m_inputs[c] = uint8_t(~inputs.pressed[c]);
 		}
+		for (size_t c = 0; c < inputs.pressed.size(); c++)
+			arcade.m_inputs[c] = full.m_inputs[c] = uint8_t(~inputs.pressed[c]);
 		arcade.run_frame();
 		full.run_frame();
 		assert(arcade.work_ram()[0x1138] == full.work_ram()[0x1138]);
@@ -543,13 +544,14 @@ static void rom_draw_distance(const char *dir, bool native)
 	size_t max_extra_quads = 0;
 	for (int f = 1; f <= 6000; f++) {
 		const auto inputs = play->frame(f);
-		for (int c = 0; c < 3; c++) {
+		for (size_t c = 0; c < inputs.analog.size(); c++) {
 			if (inputs.analog[c] >= 0) {
 				assert(arcade.set_analog_input(c, uint8_t(inputs.analog[c])));
 				assert(extended.set_analog_input(c, uint8_t(inputs.analog[c])));
 			}
-			arcade.m_inputs[c] = extended.m_inputs[c] = uint8_t(~inputs.pressed[c]);
 		}
+		for (size_t c = 0; c < inputs.pressed.size(); c++)
+			arcade.m_inputs[c] = extended.m_inputs[c] = uint8_t(~inputs.pressed[c]);
 		arcade.run_frame();
 		extended.run_frame();
 		assert(arcade.work_ram() == extended.work_ram());
@@ -884,10 +886,10 @@ static void rom_qualifying(const char *dir, bool native)
 	uint32_t record = 0, time = 0, ranking_slot = 0;
 	for (int f = 1; f <= play->min_frames(); f++) {
 		const auto inputs = play->frame(f, machine);
-		for (int c = 0; c < 3; c++) {
+		for (size_t c = 0; c < inputs.analog.size(); c++)
 			if (inputs.analog[c] >= 0) assert(machine.set_analog_input(c, uint8_t(inputs.analog[c])));
+		for (size_t c = 0; c < inputs.pressed.size(); c++)
 			machine.m_inputs[c] = uint8_t(~inputs.pressed[c]);
-		}
 		machine.run_frame();
 		const auto bad = play->check(f, machine);
 		if (!bad.empty()) fprintf(stderr, "%s\n", bad.c_str());

@@ -1,8 +1,9 @@
-// Star Wars Arcade's scripted play (src/games/swa/script.cpp) on the interpreter, both scenarios
-// with checks on: credits, the flight, hits, game over, the rankings entry and back to attract.
+// Star Wars Arcade's scripted play (src/games/swa/script.cpp) on the interpreter, all three scenarios
+// with checks on: credits, mission, flight, hits, game over and back to attract; Rebel Attack ranks
+// the score, while Training leaves the rankings unchanged.
 // The default run also checks the Digital Sound Board's in-game music (a looping stream other than
 // the attract theme), and that a silent run (the headless tools': model1cov, model1lock) plays the
-// same game as one with sound. Last, the default run again on the native recompile of the shipped map
+// same game as one with sound. All three scenarios also run on the native recompile of the shipped map
 // (assets/games/swa/swa_map.txt), with no interpreter fallback.
 #include "../../../src/games/script.h"
 #include "../../../src/games/swa/profile.h"
@@ -11,8 +12,11 @@
 #include "../../../src/machine/m1audio.h"
 #include "../../../src/rt/native.h"
 #include <cassert>
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
+#include <vector>
 
 using namespace game::swa;
 
@@ -27,6 +31,97 @@ uint64_t ram_hash(model1 &m)
 	for (auto *ram : { &m.nvram(), &m.work_ram() })
 		for (uint8_t b : *ram) h = (h ^ b) * 1099511628211ull;
 	return h;
+}
+
+void scripted_axes()
+{
+	const game::script_inputs unset;
+	for (int value : unset.analog) assert(value == -1);
+	auto pilot = game::make_auto_play(ID, "", 12345, false);
+	auto gunner = game::make_auto_play(ID, "gunner", 12345, false);
+	auto repeat = game::make_auto_play(ID, "gunner", 12345, false);
+	assert(pilot && gunner && repeat);
+	for (int f = 1; f <= 22000; f++) {
+		const auto p = pilot->frame(f), g = gunner->frame(f), r = repeat->frame(f);
+		assert(g.analog == r.analog && g.pressed == r.pressed);
+		for (int c : { 3, 6, 7 }) assert(g.analog[c] == -1);
+		for (int c = 3; c < 8; c++) assert(p.analog[c] == -1);
+		if (f >= 1600)
+			for (int c = 0; c < 3; c++) assert(p.analog[c] == g.analog[c]);
+		int x = 127, y = 127;
+		if (f >= 3700) {
+			const int phase = ((f - 3700) / 120) % 4;
+			if (phase < 2) x = phase == 0 ? 27 : 227;
+			else y = phase == 2 ? 27 : 227;
+		}
+		assert(g.analog[4] == x && g.analog[5] == y);
+	}
+	puts("SWA scripted axes: deterministic Gunner sweeps, unchanged Pilot controls and unused channels");
+}
+
+struct reticle
+{
+	int x0 = 496, x1 = -1, y0 = 384, y1 = -1, pixels = 0;
+	bool contains(int x, int y) const { return x >= x0 - 3 && x <= x1 + 3 && y >= y0 - 3 && y <= y1 + 3; }
+};
+
+void gunner_aim(const std::string &dir)
+{
+	reticle centre;
+	std::vector<uint32_t> reference;
+	for (int direction = 0; direction < 5; direction++) {
+		model1 m(load_regions(dir, ID));
+		m.reset();
+		m.set_drawing(false);
+		auto play = game::make_auto_play(ID, "gunner", 12345, false);
+		assert(play);
+		for (int f = 1; f <= 4000; f++) {
+			auto in = play->frame(f, m);
+			if (f >= 3700) {
+				in.analog[0] = in.analog[1] = 127;
+				in.analog[4] = direction == 1 ? 27 : direction == 2 ? 227 : 127;
+				in.analog[5] = direction == 3 ? 27 : direction == 4 ? 227 : 127;
+				in.pressed[1] = 0;
+			}
+			for (size_t c = 0; c < in.analog.size(); c++)
+				if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
+			for (size_t p = 0; p < in.pressed.size(); p++) m.m_inputs[p] = uint8_t(~in.pressed[p]);
+			if (f == 4000) m.set_drawing(true);
+			m.run_frame();
+		}
+		assert((m.nvram()[0xf334] | m.nvram()[0xf335] << 8) < 180 * 30);
+		const auto &frame = m.frame();
+		reticle aim;
+		for (int y = 0; y < m.frame_h(); y++)
+			for (int x = 0; x < m.frame_w(); x++)
+				if ((frame.pix(y, x) & 0xffffff) == 0x63f700) { // Gunner reticle, distinct from the green Pilot label
+					aim.x0 = std::min(aim.x0, x); aim.x1 = std::max(aim.x1, x);
+					aim.y0 = std::min(aim.y0, y); aim.y1 = std::max(aim.y1, y);
+					aim.pixels++;
+				}
+		assert(aim.pixels >= 40 && aim.x1 - aim.x0 <= 26 && aim.y1 - aim.y0 <= 26);
+		if (direction == 0) {
+			centre = aim;
+			reference.assign(frame.data(), frame.data() + size_t(m.frame_w()) * m.frame_h());
+			assert(std::abs(aim.x0 + aim.x1 - 496) < 6);
+			assert(std::abs(aim.y0 + aim.y1 - 382) < 6);
+		} else {
+			const int dx = (aim.x0 + aim.x1 - centre.x0 - centre.x1) / 2;
+			const int dy = (aim.y0 + aim.y1 - centre.y0 - centre.y1) / 2;
+			if (direction <= 2) {
+				assert(direction == 1 ? dx > 100 : dx < -100);
+				assert(std::abs(dy) <= 2);
+			} else {
+				assert(direction == 3 ? dy > 70 : dy < -70);
+				assert(std::abs(dx) <= 2);
+			}
+			for (int y = 0; y < m.frame_h(); y++)
+				for (int x = 0; x < m.frame_w(); x++)
+					if (!centre.contains(x, y) && !aim.contains(x, y))
+						assert(frame.pix(y, x) == reference[size_t(y) * m.frame_w() + x]);
+			printf("SWA Gunner direction %d: reticle moved (%d, %d), Pilot and scene unchanged\n", direction, dx, dy);
+		}
+	}
 }
 
 struct music
@@ -69,7 +164,7 @@ uint64_t run(const std::string &dir, const std::string &scenario, bool sound, in
 	bool flying = false, over = false;
 	for (int f = 1; f <= frames; f++) {
 		const game::script_inputs in = play->frame(f, m);
-		for (int c = 0; c < 3; c++)
+		for (size_t c = 0; c < in.analog.size(); c++)
 			if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
 		for (int p = 0; p < 3; p++) m.m_inputs[p] = uint8_t(~in.pressed[p]);
 		m.run_frame();
@@ -107,6 +202,9 @@ int main(int argc, char **argv)
 	assert(!game::make_auto_play(ID, "no-such-scenario", 1, false));
 	auto quiet = game::make_auto_play(ID, "", 1, false);
 	assert(quiet && quiet->finish().empty());
+	scripted_axes();
+	gunner_aim(argv[1]);
+	if (argc > 2 && std::string(argv[2]) == "--aim") return 0;
 
 	music dsb;
 	run(argv[1], "", true, 22000, true, &dsb);
@@ -114,6 +212,7 @@ int main(int argc, char **argv)
 	puts("SWA in-game DSB music: a looping stream outside the attract theme");
 
 	run(argv[1], "gunner", true, 22000, true);
+	run(argv[1], "training", true, 22000, true);
 
 	const uint64_t with_sound = run(argv[1], "", true, SILENT_FRAMES, false);
 	const uint64_t silent = run(argv[1], "", false, SILENT_FRAMES, false);
@@ -125,5 +224,11 @@ int main(int argc, char **argv)
 	assert(native_dsb.in_game && native_dsb.looped);
 	assert(rec::fallback_count() == 0);
 	puts("SWA native: the scripted game and its music with no interpreter fallback");
+	run(argv[1], "training", true, 22000, true, nullptr, true);
+	assert(rec::fallback_count() == 0);
+	puts("SWA native Training: the scripted game with no interpreter fallback");
+	run(argv[1], "gunner", true, 22000, true, nullptr, true);
+	assert(rec::fallback_count() == 0);
+	puts("SWA native Gunner: aiming and firing with no interpreter fallback");
 	puts("SWA gameplay tests passed");
 }

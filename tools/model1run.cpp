@@ -150,7 +150,7 @@ int main(int argc, char **argv)
 	for (int f = 1; f <= frames; f++) {
 		if (play) {
 			const game::script_inputs in = play->frame(f, m);
-			for (int c = 0; c < 3; c++)
+			for (size_t c = 0; c < in.analog.size(); c++)
 				if (in.analog[c] >= 0 && !pinned[c] && !m.set_analog_input(c, uint8_t(in.analog[c]))) {
 					fprintf(stderr, "%s scripted run requires the Model 1 I/O board ROM (model1io.zip)\n", game::get(title).display_name.data());
 					return 1;

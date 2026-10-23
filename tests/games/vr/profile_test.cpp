@@ -27,7 +27,7 @@ static void keyboard_medium(const char *dir)
 			released++;
 		}
 		assert(m.set_analog_input(0, value));
-		for (int c = 1; c < 3; c++)
+		for (size_t c = 1; c < input.analog.size(); c++)
 			if (input.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(input.analog[c])));
 		for (int c = 0; c < 3; c++) m.m_inputs[c] = uint8_t(~input.pressed[c]);
 		m.run_frame();
