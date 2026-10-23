@@ -69,20 +69,8 @@ Non-Steam Game and set **Start In** to the extracted **VirtuaRacing** folder.
 | Insert coin (Arcade mode) | 5 | D-pad Up |
 | Open menu | Esc | View / Select |
 
-These are the defaults for a new configuration. Saved bindings in `settings.ini` take
-precedence and are kept when you update the app, so an existing setup may still use
-D-pad Up/Down for shifting.
-
 To see or change your actual controller bindings, open **Esc > Controls > Player 1 >
-Pad buttons**. Check **Coin** for your Insert Coin button; the default is **D-pad Up**.
-The default keyboard coin key is **5**. Coins are only needed in Arcade play style.
-
-Controllers can be connected or reconnected while the app is running, including over
-Bluetooth. Allow about a second after the system connects it. Under **Controls > Player 1**,
-set **Pad** to **Any pad** or your controller rather than **None** to enable it.
-
-**Choosing a course or entering initials:** hold Left/Right to move gradually, release to keep your
-selection, then press Accelerator to confirm.
+Pad buttons**. Coins are only needed in Arcade play style.
 
 ### Useful settings
 

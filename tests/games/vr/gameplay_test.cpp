@@ -222,6 +222,10 @@ static void scenery_lists()
 		write_rom(record + 8, 10);
 		write_rom(record + 12, 0);
 	}
+	write_rom(0x7000, 500);
+	write_rom(0x7004, 0x40123);
+	write_rom(0x7008, 1);
+	write_rom(0x700c, 0);
 	const auto original_rom = regions.maincpu;
 	model1 machine(std::move(regions));
 	auto &ram = machine.work_ram();
@@ -235,6 +239,7 @@ static void scenery_lists()
 	for (int center = 0; center < 256; center++) {
 		state->lod = lod;
 		std::fill(ram.begin(), ram.end(), 0xcd);
+		bus.write32(0x501368, 0x407900);
 		std::fill_n(ram.begin() + 0x1aa0, 32, 0);
 		const int cx = center & 15, cy = center >> 4;
 		int n = 0;
@@ -278,6 +283,37 @@ static void scenery_lists()
 		assert(callbacks.matrix_objects().empty());
 		assert(ram == before && machine.program_rom() == original_rom);
 	}
+	for (bool full : { false, true })
+	for (bool visible : { false, true }) {
+		game::vr::set_extended_draw_distance(machine, full);
+		state->extended_draw_distance = full;
+		machine.write32(0x501368, 0x407980);
+		machine.write32(0x40790a, 0xffcc7d);
+		machine.write16(0x407934, 0);
+		machine.write32(0x501ac0, visible ? 1 : 0);
+		machine.write32(0x40794c, 0x7000);
+		for (const auto &[offset, value] : std::array<std::pair<uint32_t, float>, 5>{ {
+			{ 0x1e, 10 }, { 0x22, 20 }, { 0x26, 30 }, { 0x5e, 2 }, { 0x67, -.5f }
+		} }) machine.write32(0x407900 + offset, std::bit_cast<uint32_t>(value));
+		for (uint32_t offset : { 0x2au, 0x2cu, 0x2eu }) machine.write16(0x407900 + offset, 0);
+		const auto before = ram;
+		state->scenery_pending = true;
+		const auto objects = callbacks.matrix_objects();
+		int boards = 0;
+		for (const auto &object : objects)
+			if (object.owner) {
+				boards++;
+				assert(object.owner == 0x407900 && object.polygon == 500 && object.texture == 0x40123);
+				assert(object.transform);
+				const auto &pose = *object.transform;
+				assert(pose[0] == 1 && pose[4] == 1 && pose[8] == 1);
+				assert(pose[9] == 10 && pose[10] == 21.5f && pose[11] == 30);
+			}
+		assert(boards == int(full && !visible));
+		assert(ram == before);
+	}
+	state->extended_draw_distance = true;
+	machine.write32(0x501368, 0x407900);
 	machine.cpu().pc_ref() = 0xff7dc5;
 	callbacks.work_ram_written(0xff);
 	bus.write32(0x500100, 0xffddd4);
@@ -348,10 +384,10 @@ static void animated_scenery_settings()
 	for (bool full : { false, true }) {
 		game::vr::set_extended_draw_distance(machine, full);
 		for (uint32_t pc : { 0xffd77au, 0xffd928u, 0xffdabau, 0xffc1b2u,
-			0xffb0ebu, 0xffb769u, 0xffaac4u, 0xffb679u, 0xffd644u, 0xffdc4du, 0u }) {
+			0xffb0ebu, 0xffb769u, 0xffaac4u, 0xffb679u, 0xffd644u, 0xffdc4du, 0xffd0e2u, 0xffcc8cu, 0u }) {
 			machine.cpu().pc_ref() = pc;
 			const bool wide_mask = pc == 0xffb0eb || pc == 0xffb769 || pc == 0xffaac4 ||
-				pc == 0xffb679 || pc == 0xffdc4d;
+				pc == 0xffb679 || pc == 0xffdc4d || pc == 0xffd0e2;
 			const bool narrow_mask = pc == 0xffd77a || pc == 0xffd928 || pc == 0xffdaba || pc == 0xffc1b2;
 			for (uint32_t address = 0x501a9c; address <= 0x501ae0; address += 4) {
 				machine.write32(address, 0x12345678);
@@ -367,7 +403,7 @@ static void animated_scenery_settings()
 		for (uint32_t caller : { 0xffd809u, 0xffd85au, 0xffd9e8u, 0xffda21u, 0xffda67u,
 			0xffdb49u, 0xffdb9au, 0xffdbd5u, 0xffb254u, 0xffb81cu, 0xffb859u, 0xffc235u, 0xffc251u,
 			0xffab97u, 0xffb72cu, 0xffddd4u, 0xffddebu, 0xffde6eu, 0xffdedcu, 0xffdf42u,
-			0xff846fu, 0xffd72bu, 0u }) {
+			0xffd19cu, 0xffcec9u, 0xff846fu, 0xffd72bu, 0u }) {
 			machine.write32(0x500100, caller);
 			for (uint32_t pc : { 0xff84a2u, 0xff848au, 0xff8571u }) {
 				machine.cpu().pc_ref() = pc;
@@ -375,7 +411,7 @@ static void animated_scenery_settings()
 					caller == 0xffb254 || caller == 0xffb81c || caller == 0xffb859 || caller == 0xffc235 ||
 					caller == 0xffc251 || caller == 0xffab97 || caller == 0xffb72c ||
 					caller == 0xffddd4 || caller == 0xffddeb || caller == 0xffde6e ||
-					caller == 0xffdedc || caller == 0xffdf42;
+					caller == 0xffdedc || caller == 0xffdf42 || caller == 0xffd19c;
 				assert(machine.read32(0x5011b0) ==
 					(full && animated && pc != 0xff8571 ? 0x7fffffffu : 1234u));
 			}

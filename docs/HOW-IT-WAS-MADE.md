@@ -378,6 +378,21 @@ distant palms in 122 smooth pixel samples and 121 with smooth motion off. Their 
 query retains its real result inside the original mask; outside it the non-hit result prevents
 new impacts, crash sounds and detached fronds. All five palm drawing calls bypass the submission
 budget in Full mode, including the existing impact-animation parts. Arcade mode is unchanged.
+The fixed arrow boards at Big Forest's pit exit have their own render-only wide-mask check
+at `FFD0E2`. Full bypasses that check and the drawing budget at caller `FFD19C`, with R25
+matrix ownership. This handler has no collision queries. `build/bin/model1_video_test build/vr --direction-signs` checks
+6,000 frames including a Beginner race on both backends, with smoothing and LOD alternated.
+It verifies all 5,328 board calls (4,248 outside the original mask), visible distant boards in
+249 active-race pixel samples, and unchanged simulation across 2,699 matched updates.
+Breakable boards keep their original gate at `FFCC8C`: it freezes impact detection, motion,
+breakage and sound together outside the arcade mask. Full adds their missing meshes to the
+host-only scenery supplement, using each board's saved translation, three rotations and
+animation offsets without executing any extra board logic. Supplemental objects carry an
+optional local transform and owner; the renderer composes it with the current camera, and
+retained-list hashes include the saved pose. Originally visible boards retain their arcade
+drawing path, with R25 ownership at caller `FFCEC9`. The direction-sign regression also
+compares every breakable board's state bytes at matched simulation boundaries in races and
+attract mode, and checks actual distant-board pixels across both backends and motion modes.
 Static coverage is checked against
 the course table captured when its list was written, not the next scene's table during camera cuts.
 The smooth Full runs retain every static course object across all 2,186 scenery lists.

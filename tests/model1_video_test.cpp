@@ -42,7 +42,7 @@ struct model1_video_test
 		}
 	}
 
-	static void trackside_distance(const char *dir, bool native, bool smooth = true, bool lod = true)
+	static void trackside_distance(const char *dir, bool native, bool smooth = true, bool lod = true, bool racing = false)
 	{
 		model1 arcade(load_regions(dir, game::id{ "vr" })), full(load_regions(dir, game::id{ "vr" }));
 		for (model1 *m : { &arcade, &full }) {
@@ -58,7 +58,7 @@ struct model1_video_test
 			assert(rec::build_native(full.program_rom(), map));
 			full.run_cpu = [](int n) { rec::run(n); };
 		}
-		std::array<int, 6> calls{}, outside{}, writes{}, pixels{};
+		std::array<int, 8> calls{}, outside{}, writes{}, pixels{};
 		std::array<std::vector<std::vector<uint32_t>>, 2> simulation;
 		int sim_index = 0;
 		for (model1 *m : { &arcade, &full }) {
@@ -71,9 +71,16 @@ struct model1_video_test
 				for (uint32_t car = 0x400d00; car < 0x403500; car += 0x280)
 					for (uint32_t field : { 0x1eu, 0x22u, 0x26u, 0x30u, 0x3cu, 0x44u, 0x191u, 0x1abu })
 						snapshot.push_back(m->read32(car + field));
+				for (uint32_t record = 0x407900; record < m->read32(0x501368); record += 0x80)
+					if (m->read32(record + 0xa) == 0xffcc7d)
+						for (uint32_t offset = 0x1c; offset < 0x6b; offset++)
+							snapshot.push_back(m->read8(record + offset));
 			};
 		}
-		std::array<std::set<uint32_t>, 6> polygons;
+		std::array<std::set<uint32_t>, 8> polygons;
+		for (uint32_t list : { 0x2e02c0u, 0x2e02d0u, 0x2e02e0u, 0x2e0340u })
+			polygons[7].insert(full.read32(list));
+		polygons[6].insert(full.read32(0x2e02d0));
 		polygons[3].insert(full.read32(0x2e03e0));
 		polygons[4].insert(full.read32(0x2e00f0));
 		for (int i = 0; i < 128; i++)
@@ -87,7 +94,7 @@ struct model1_video_test
 		const auto read = full.m_gameplay.read32_value;
 		full.m_gameplay.read32_value = [&](uint32_t pc, uint32_t address, uint32_t value) {
 			const int type = pc == 0xffb769 ? 0 : pc == 0xffb0eb ? 1 : pc == 0xffc1b2 ? 2 :
-				pc == 0xffaac4 ? 3 : pc == 0xffb679 ? 4 : pc == 0xffdc4d ? 5 : -1;
+				pc == 0xffaac4 ? 3 : pc == 0xffb679 ? 4 : pc == 0xffdc4d ? 5 : pc == 0xffd0e2 ? 6 : -1;
 			const uint32_t result = read(pc, address, value);
 			if (type >= 0) {
 				const uint32_t cell = full.read16(full.cpu().reg(25) + 0x34);
@@ -107,13 +114,34 @@ struct model1_video_test
 				if (caller == 0xffab97) writes[3]++;
 				if (caller == 0xffb72c) writes[4]++;
 				if (caller == 0xffddd4 || caller == 0xffddeb) writes[5]++;
+				if (caller == 0xffd19c) writes[6]++;
 			}
-			return matrix();
+			auto extra = matrix();
+			for (const auto &o : extra)
+				if (o.owner && full.read32(o.owner + 0xa) == 0xffcc7d) {
+					calls[7]++;
+					outside[7]++;
+					assert(o.transform);
+					assert(polygons[7].count(o.polygon));
+				}
+			return extra;
 		};
 		const auto object = full.m_gameplay.object;
 		size_t compared = 0;
 		int rear_banner_pixels = 0;
+		int racing_sign_pixels = 0;
+		int racing_breakable_pixels = 0;
+		auto play = game::make_auto_play(game::id{ "vr" }, "", 12345, false);
+		assert(play);
 		for (int f = 1; f <= 6000; f++) {
+			if (racing) {
+				const auto input = play->frame(f);
+				for (model1 *m : { &arcade, &full })
+					for (int c = 0; c < 3; c++) {
+						m->m_inputs[c] = uint8_t(~input.pressed[c]);
+						if (input.analog[c] >= 0) assert(m->set_analog_input(c, uint8_t(input.analog[c])));
+					}
+			}
 			arcade.run_frame();
 			full.run_frame();
 			const size_t common = std::min(simulation[0].size(), simulation[1].size());
@@ -141,10 +169,12 @@ struct model1_video_test
 			}
 			const size_t n = size_t(full.frame_w()) * full.frame_h();
 			const std::vector<uint32_t> picture(full.frame().data(), full.frame().data() + n);
-			for (int type = 0; type < 6; type++) {
+			for (int type = 0; type < 8; type++) {
 				full.m_gameplay.object = [&](uint32_t owner, uint32_t texture, uint32_t polygon, uint32_t size, const float *data) {
 					auto effect = object(owner, texture, polygon, size, data);
-					if (polygons[type].count(polygon)) {
+					if (polygons[type].count(polygon) &&
+						(type != 6 || full.read32(owner + 0xa) == 0xffd0d3) &&
+						(type != 7 || full.read32(owner + 0xa) == 0xffcc7d)) {
 						assert(owner >= 0x400000 && owner < 0x410000);
 						const uint32_t cell = full.read16(owner + 0x34);
 						assert(cell < 256);
@@ -158,20 +188,31 @@ struct model1_video_test
 				for (size_t i = 0; i < n; i++) if (picture[i] != full.frame().data()[i]) changed++;
 				if (changed > 4) pixels[type]++;
 				if (type == 1 && changed > 4 && rear) rear_banner_pixels++;
+				if (type == 6 && changed > 4 && full.work_ram()[0x1138] == 0x14) racing_sign_pixels++;
+				if (type == 7 && changed > 4 && full.work_ram()[0x1138] == 0x14) racing_breakable_pixels++;
 			}
 			full.m_gameplay.object = object;
 		}
 		printf("Matched simulation updates: %zu; rear-facing distant banner pixel samples: %d\n", compared, rear_banner_pixels);
 		assert(compared > 2000);
-		if (smooth) assert(rear_banner_pixels > 5);
-		for (int type = 0; type < 6; type++) {
+		if (smooth && !racing) assert(rear_banner_pixels > 5);
+		if (racing) {
+			printf("Beginner race distant arrow-board pixel samples: %d\n", racing_sign_pixels);
+			assert(racing_sign_pixels > 200);
+			printf("Beginner race distant breakable-board pixel samples: %d; supplemental instances: %d\n",
+				racing_breakable_pixels, calls[7]);
+			assert(calls[7] > 100);
+		}
+		for (int type = 0; type < 8; type++) {
 			printf("Trackside %s (%s): %d calls, %d outside, %d part writes, %d distant pixel samples; car simulation unchanged\n",
 				type == 0 ? "windmill" : type == 1 ? "banner" : type == 2 ? "flag" :
-					type == 3 ? "light pole" : type == 4 ? "windmill building" : "palm",
+					type == 3 ? "light pole" : type == 4 ? "windmill building" : type == 5 ? "palm" :
+					type == 6 ? "arrow board" : "breakable board",
 				native ? "native" : "interpreter",
 				calls[type], outside[type], writes[type], pixels[type]);
-			assert(calls[type] > 100 && outside[type] > 100 && pixels[type] > 5);
-			assert(writes[type] == calls[type] * (type == 0 || type == 2 ? 4 : 2));
+			if (!racing || type >= 6)
+				assert(calls[type] > 100 && outside[type] > 100 && pixels[type] > (type >= 6 ? 0 : 5));
+			if (type != 7) assert(writes[type] == calls[type] * (type == 0 || type == 2 ? 4 : 2));
 		}
 	}
 
@@ -400,7 +441,7 @@ struct model1_video_test
 			auto extra = matrix_objects();
 			if (collecting)
 				for (const auto &object : extra)
-					assert(drawn.emplace(object.texture, object.polygon).second);
+					if (!object.owner) assert(drawn.emplace(object.texture, object.polygon).second);
 			return extra;
 		};
 		auto trace = [&](uint32_t pc) {
@@ -907,7 +948,7 @@ struct model1_video_test
 		m.cpu().reg_ptr()[19] = 0x401700;
 		m.cpu().reg_ptr()[25] = 0x40a300;
 		m.cpu().reg_ptr()[31] = 0x500100;
-		for (uint32_t caller : { 0xffddd4, 0xffddeb, 0xffde6e, 0xffdedc, 0xffdf42, 0xff8470 }) {
+		for (uint32_t caller : { 0xffddd4, 0xffddeb, 0xffde6e, 0xffdedc, 0xffdf42, 0xffcec9, 0xff8470 }) {
 			m.write32(0x500100, caller);
 			m.list_written(0, 8);
 			assert(m.m_list_owner[0][8] == (caller == 0xff8470 ? 0x401700 : 0x40a300));
@@ -1350,6 +1391,14 @@ struct model1_video_test
 int main(int argc, char **argv)
 {
 	model1_video_test::trackside_collisions();
+	if (argc > 2 && std::string(argv[2]) == "--direction-signs") {
+		for (bool native : { false, true })
+			for (bool smooth : { false, true }) {
+				model1_video_test::trackside_distance(argv[1], native, smooth, !smooth, true);
+				model1_video_test::trackside_distance(argv[1], native, smooth, !smooth);
+			}
+		return 0;
+	}
 	if (argc > 2 && std::string(argv[2]) == "--trackside") {
 		model1_video_test::trackside_distance(argv[1], false);
 		return 0;
@@ -1423,6 +1472,7 @@ int main(int argc, char **argv)
 				model1_video_test::logo(argv[1], smooth, extended);
 	if (argc > 1) {
 		model1_video_test::trackside_distance(argv[1], false);
+		model1_video_test::trackside_distance(argv[1], false, true, false, true);
 		for (bool full : { false, true })
 			model1_video_test::attract_scenery(argv[1], full, true, true, false);
 		for (bool smooth : { false, true }) model1_video_test::crash_livery(argv[1], smooth);

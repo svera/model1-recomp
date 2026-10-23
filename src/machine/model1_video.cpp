@@ -2051,8 +2051,21 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 						for (const auto &object : *extra) {
 							float blended[12];
 							if (m_replaying && smooth_matrix(object.polygon, blended)) m_view->set_translation_matrix(blended);
+							if (object.transform) {
+								const auto &local = *object.transform;
+								float parent[12];
+								std::copy_n(m_view->translation, 12, parent);
+								for (int c = 0; c < 3; c++)
+									for (int r = 0; r < 3; r++)
+										blended[c * 3 + r] = parent[r] * local[c * 3] +
+											parent[3 + r] * local[c * 3 + 1] + parent[6 + r] * local[c * 3 + 2];
+								for (int r = 0; r < 3; r++)
+									blended[9 + r] = parent[9 + r] + parent[r] * local[9] +
+										parent[3 + r] * local[10] + parent[6 + r] * local[11];
+								m_view->set_translation_matrix(blended);
+							}
 							quad_t *first = m_quadpt;
-							push_object(object.texture, object.polygon, object.size, extra_z, owner);
+							push_object(object.texture, object.polygon, object.size, extra_z, object.owner ? object.owner : owner);
 							for (quad_t *q = first; q < m_quadpt; q++) q->obj = object.polygon;
 							m_view->set_translation_matrix(mat);
 							m_shade_from = m_shade_to = m_shade_light = nullptr;

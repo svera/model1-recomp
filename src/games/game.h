@@ -80,6 +80,8 @@ struct object_effects
 struct render_object
 {
 	uint32_t texture, polygon, size;
+	uint32_t owner = 0;
+	std::optional<std::array<float, 12>> transform;
 };
 
 struct record_visibility

@@ -219,9 +219,13 @@ void model1::record_frame()
 		for (size_t i = 0; i < lf.slots.size(); i++)
 			if (!lf.slots[i].extra.empty()) {
 				h = (h ^ i) * 1099511628211ull;
-				for (const auto &object : lf.slots[i].extra)
-					for (uint32_t value : { object.texture, object.polygon, object.size })
+				for (const auto &object : lf.slots[i].extra) {
+					for (uint32_t value : { object.texture, object.polygon, object.size, object.owner })
 						h = (h ^ value) * 1099511628211ull;
+					if (object.transform)
+						for (float value : *object.transform)
+							h = (h ^ std::bit_cast<uint32_t>(value)) * 1099511628211ull;
+				}
 			}
 		lf.hash = h;
 		lf.camera = m_list_camera[m_picture_buffer];

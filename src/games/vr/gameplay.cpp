@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cmath>
 #include <utility>
+#include <glm/glm.hpp>
 
 namespace game::vr {
 
@@ -107,6 +108,41 @@ std::vector<render_object> scenery_objects(model1 &machine, gameplay_state &stat
 			objects.push_back({ bus.read32(record + 4), polygon, 0 });
 		});
 	}
+	// The breakable boards' visibility gate also freezes their physics. Draw missing boards
+	// from their saved poses instead of running that handler outside the arcade mask.
+	const uint32_t end = machine.read32(0x501368);
+	if (end && (end < 0x407900 || end > 0x410000 || (end - 0x407900) % 0x80)) {
+		fprintf(stderr, "VR draw distance: invalid scenery records end %06x\n", end);
+		std::abort();
+	}
+	for (uint32_t record = 0x407900; record < end; record += 0x80) {
+		if (machine.read32(record + 0xa) != 0xffcc7d) continue;
+		const uint32_t cell = machine.read16(record + 0x34);
+		if (cell >= 256) {
+			fprintf(stderr, "VR draw distance: invalid breakable board cell %u\n", cell);
+			std::abort();
+		}
+		if (machine.read32(0x501ac0 + cell / 32 * 4) & (1u << (cell % 32))) continue;
+		auto number = [&](uint32_t offset) { return std::bit_cast<float>(machine.read32(record + offset)); };
+		glm::mat3 rotation(1);
+		for (const auto &[offset, first, second] : std::array<std::array<int, 3>, 3>{ {
+			{ 0x2c, 2, 0 }, { 0x2a, 1, 2 }, { 0x2e, 0, 1 }
+		} }) {
+			const float angle = int16_t(machine.read16(record + offset)) * (2.0f * 3.14159265358979323846f / 65536.0f);
+			const float s = std::sin(angle), c = std::cos(angle);
+			const glm::vec3 a = rotation[first], b = rotation[second];
+			rotation[first] = c * a - s * b;
+			rotation[second] = s * a + c * b;
+		}
+		const glm::vec3 position = glm::vec3(number(0x1e), number(0x22) + number(0x5e), number(0x26)) +
+			rotation * glm::vec3(0, number(0x67), 0);
+		std::array<float, 12> transform;
+		for (int c = 0; c < 3; c++)
+			for (int r = 0; r < 3; r++) transform[c * 3 + r] = rotation[c][r];
+		for (int r = 0; r < 3; r++) transform[9 + r] = position[r];
+		const uint32_t list = machine.read32(record + 0x4c);
+		objects.push_back({ read_rom(list + 4, 4), read_rom(list, 12), 0, record, transform });
+	}
 	return objects;
 }
 }
@@ -178,7 +214,7 @@ gameplay_callbacks create_gameplay(model1 &machine)
 					caller == 0xffb81c || caller == 0xffb859 || caller == 0xffc235 ||
 					caller == 0xffc251 || caller == 0xffab97 || caller == 0xffb72c ||
 					caller == 0xffddd4 || caller == 0xffddeb || caller == 0xffde6e ||
-					caller == 0xffdedc || caller == 0xffdf42) return 0x7fffffffu;
+					caller == 0xffdedc || caller == 0xffdf42 || caller == 0xffd19c) return 0x7fffffffu;
 			}
 		}
 		// Render-only scenery and flags use the narrow mask; collidable props use the wider one.
@@ -186,7 +222,7 @@ gameplay_callbacks create_gameplay(model1 &machine)
 			(pc == 0xffd77a || pc == 0xffd928 || pc == 0xffdaba || pc == 0xffc1b2)) return 0xffffffffu;
 		if (state->extended_draw_distance && address >= 0x501ac0 && address <= 0x501adc &&
 			(pc == 0xffb0eb || pc == 0xffb769 || pc == 0xffaac4 || pc == 0xffb679 ||
-			 pc == 0xffdc4d)) return 0xffffffffu;
+			 pc == 0xffdc4d || pc == 0xffd0e2)) return 0xffffffffu;
 		return value;
 	};
 	callbacks.object = [&machine, state](uint32_t owner, uint32_t, uint32_t polygon, uint32_t, const float *) {
