@@ -133,6 +133,7 @@ make test-swa-boot                  # two 1800-frame cold boots; needs model1io.
 make test-swa-controls              # buttons and axes against the game's own input test
 make test-swa-dsb                   # the Digital Sound Board, stubbed and in the attract sequence
 make test-swa-gameplay              # scripted games, PILOT and PILOT & GUNNER, to game over and back
+make test-swa-video                 # name-entry letters over the photograph, at 1x and 2x
 make swa-coverage                   # record those runs as hints for the recompile
 make swa-native-lockstep            # native code against the interpreter, both scenarios, 22,000 frames
 make swa-lockstep                   # the same for the generated C++
@@ -152,6 +153,12 @@ and on the interpreter, but camera/mode RAM identification remains to be done: t
 left unset, and the original boot sequence is shown rather than skipped. Release packaging remains
 VR-only.
 
+Foreground polygons (display-list command `0x41`) are masked only by the HUD layers' bright
+features, not by the background picture or the regular 3D scene. This keeps the name-entry letters
+in front of the photograph while preserving cockpit/radar features. `test-model1-video` checks
+this separation at 1x/2x and 4:3/16:9; `test-swa-video` also reaches the real name-entry screen
+and checks that the photograph does not cut holes in the letters.
+
 #### SWA native recompilation
 
 SWA runs its program from the low ROM copy (`0x0c0000`–`0x0fffff`), so the code analyser
@@ -166,6 +173,10 @@ lockstep noted no more; `swa-native-lockstep` and `swa-lockstep` now run both sc
 `test-swa-gameplay` plays the default scenario natively with sound. Code the scripts never reach
 (other missions' branches, the test menu) may still fall back to the interpreter, which is correct
 but slower, and is noted for the next map.
+
+The shipped map also includes entries collected during manual play. These remove the recorded
+fallbacks, but the console log does not record inputs, so it cannot replay or validate that manual
+session. Both scripted scenarios are rechecked in strict native lockstep after expanding the map.
 
 #### SWA controls
 

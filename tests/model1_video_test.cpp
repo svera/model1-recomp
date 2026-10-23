@@ -14,6 +14,78 @@
 
 struct model1_video_test
 {
+	static void overlay_priority()
+	{
+		for (int scale : { 1, 2 })
+			for (float aspect : { 4.0f / 3, 16.0f / 9 }) {
+				model1::regions regions;
+				regions.title = game::id{ "swa" };
+				model1 m(std::move(regions));
+				m.set_render_scale(scale);
+				m.set_aspect(aspect);
+				m.m_pens[1] = 0x00ff00;
+				m.m_pens[2] = 0x000000;
+				m.m_pens[3] = 0xffffff;
+				for (int i = 0; i < 16; i++) {
+					m.m_tiles.char_w(16 + i, 0x1111, 0xffff);
+					m.m_tiles.char_w(32 + i, 0x2222, 0xffff);
+					m.m_tiles.char_w(48 + i, 0x3333, 0xffff);
+				}
+				m.m_tiles.tile_w(0, 0x8001, 0xffff);
+				m.m_tiles.tile_w(1, 0x8002, 0xffff);
+				m.m_tiles.tile_w(2, 3, 0xffff);
+				m.m_tiles.update(m.m_pens);
+				auto &bitmap = m.m_bitmap;
+				bitmap.fill(0x808080);
+				for (int layer : { 7, 5, 3, 1 }) m.draw_tiles(bitmap, bitmap.cliprect(), layer, 0);
+				m.build_overlay_mask(bitmap, bitmap.cliprect());
+				bitmap.fill(0xffff00);
+				m.apply_overlay_stencil(bitmap, bitmap.cliprect());
+				for (int y = 0; y < bitmap.height(); y++)
+					for (int x = 0; x < bitmap.width(); x++) {
+						const bool feature = y < 8 * scale && x >= m.m_ext * scale && x < (m.m_ext + 8) * scale;
+						assert(bitmap.pix(y, x) == (feature ? 0x00ff00u : 0xffff00u));
+					}
+			}
+		puts("Overlay priority: only HUD features mask foreground polygons, not dark HUD or bright backgrounds");
+	}
+
+	static void swa_name_entry(const char *dir)
+	{
+		const game::id title{ "swa" };
+		model1 m(load_regions(dir, title));
+		m.reset();
+		m.set_drawing(false);
+		auto play = game::make_auto_play(title, "", 12345, false);
+		assert(play);
+		for (int f = 1; f <= 15750; f++) {
+			const auto in = play->frame(f, m);
+			for (int c = 0; c < 3; c++) {
+				if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
+				m.m_inputs[c] = uint8_t(~in.pressed[c]);
+			}
+			m.run_frame();
+		}
+		for (int scale : { 1, 2 }) {
+			m.set_render_scale(scale);
+			m.screen_update(m.m_bitmap, m.m_bitmap.cliprect());
+			assert(m.m_above_hud_seen);
+			bitmap_rgb32 unmasked;
+			unmasked.allocate(m.frame_w(), m.frame_h());
+			std::copy_n(m.frame().data(), size_t(m.frame_w()) * m.frame_h(), unmasked.data());
+			m.tgp_render(unmasked, unmasked.cliprect(), model1::RENDER_ABOVE_HUD);
+			size_t yellow = 0;
+			for (int y = 50 * scale; y < m.frame_h(); y++)
+				for (int x = 0; x < m.frame_w(); x++) {
+					const uint32_t pixel = m.m_bitmap.pix(y, x);
+					assert(pixel == unmasked.pix(y, x));
+					if ((pixel & 0xffff00) == 0xffff00 && (pixel & 0xff) == 0) yellow++;
+				}
+			assert(yellow > size_t(1000 * scale * scale));
+			printf("SWA name entry (%dx): %zu yellow letter pixels, no masking by the photograph\n", scale, yellow);
+		}
+	}
+
 	static void trackside_collisions()
 	{
 		model1::regions regions;
@@ -1390,6 +1462,11 @@ struct model1_video_test
 
 int main(int argc, char **argv)
 {
+	model1_video_test::overlay_priority();
+	if (argc > 2 && std::string(argv[2]) == "--swa-priority") {
+		model1_video_test::swa_name_entry(argv[1]);
+		return 0;
+	}
 	model1_video_test::trackside_collisions();
 	if (argc > 2 && std::string(argv[2]) == "--direction-signs") {
 		for (bool native : { false, true })

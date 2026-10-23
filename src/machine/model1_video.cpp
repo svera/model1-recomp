@@ -2232,26 +2232,26 @@ void model1::video_start()
 
 }
 
-// Snapshot the HUD after the cat1 tilemaps are composited: a pixel is a bright
-// "feature" (grid lines, struts) when any channel rises above near-black,
-// otherwise it is transparent/screen background where the above-HUD blips show.
+// Only cat1 HUD features can mask the above-HUD pass. Sampling the whole picture
+// also masks SWA's name-entry letters with the photograph in the cat0 backdrop.
 void model1::build_overlay_mask(bitmap_rgb32 &bitmap, const rectangle &cliprect)
 {
 	constexpr int feature_level = 8; // anything darker counts as HUD background
+	parts_composite(m_top, m_top_key, m_top_gen, { 7, 5, 3, 1 });
 	if (!m_overlay_block) {
 		m_overlay_block = std::make_unique<uint8_t[]>(size_t(bitmap.width()) * bitmap.height());
 		m_overlay_hud_snapshot = std::make_unique<uint32_t[]>(size_t(bitmap.width()) * bitmap.height());
 	}
 	for (int y = cliprect.min_y; y <= cliprect.max_y; y++)
 	{
-		uint32_t const *const src = &bitmap.pix(y);
+		const uint32_t *const hud = &m_top.pix(y / m_scale);
 		for (int x = cliprect.min_x; x <= cliprect.max_x; x++)
 		{
-			uint32_t argb = src[x];
+			const uint32_t argb = hud[x / m_scale];
 			int r = (argb >> 16) & 0xff, g = (argb >> 8) & 0xff, b = argb & 0xff;
 			int i = y * m_overlay_stride + x;
-			m_overlay_block[i] = (r > feature_level || g > feature_level || b > feature_level);
-			m_overlay_hud_snapshot[i] = argb;
+			m_overlay_block[i] = argb != KEY && (r > feature_level || g > feature_level || b > feature_level);
+			m_overlay_hud_snapshot[i] = bitmap.pix(y, x);
 		}
 	}
 }

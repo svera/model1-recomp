@@ -41,4 +41,7 @@ $(BIN)/swa_gameplay_test: $(OBJ)/tests/games/swa/gameplay_test.o $(GAMES_LINK) $
 test-swa-gameplay: $(BIN)/swa_gameplay_test swa-regions
 	$(BIN)/swa_gameplay_test build/swa
 
-.PHONY: test-swa-profile test-swa-romset test-swa-boot test-swa-controls test-swa-dsb test-swa-gameplay
+test-swa-video: $(BIN)/model1_video_test swa-regions
+	$(BIN)/model1_video_test build/swa --swa-priority
+
+.PHONY: test-swa-profile test-swa-romset test-swa-boot test-swa-controls test-swa-dsb test-swa-gameplay test-swa-video
