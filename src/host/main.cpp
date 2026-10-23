@@ -187,6 +187,7 @@ hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const playe
 		for (int a = 0; a < C_COUNT; a++)
 			if (key(ctl[p].key[a])) in[1 + p] |= BITS[a];
 		const bool kstart = key(ctl[p].key[C_START]);
+		bool start_held = kstart;
 		if (kstart && !key_start_was[p]) press_start();
 		key_start_was[p] = kstart;
 		// Coin (a cabinet's coin slot, mapped in the menu): a coin for this player, in Arcade mode
@@ -240,6 +241,7 @@ hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const playe
 				for (int a : prof.pad_actions)
 					if (player_controls::pad_down(g, ctl[p].pad[a])) b |= BITS[a];
 				if (start && !st.start_was) press_start();
+				start_held |= start;
 			}
 			// View tapped on its own: whichever of Menu and Coin it's set as
 			if (!back && st.back_was && !st.back_combo) {
@@ -253,6 +255,7 @@ hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const playe
 		if (st.coin_frames > 0) { in[0] |= coin_bit; st.coin_frames--; }
 		if (st.start_delay >= 0 && st.start_delay-- == 0) st.start_frames = 6;
 		if (st.start_frames > 0) { in[0] |= start_bit; st.start_frames--; }
+		if (prof.hold_start && start_held) in[0] |= start_bit;
 	}
 	static bool down_was, start_was, in_test;
 	static int service_frames, test_ago = 1 << 20, mode3_frames;
@@ -1965,8 +1968,20 @@ int main(int argc, char **argv)
 	// present's wait, a picture's drawing), and shown a refresh apart the motion wobbled. Only while the
 	// passes keep to the screen's refreshes, a whole number of them apart on average: not with vsync
 	// off or not honoured, nor a minimised or covered window; never back. M1_NO_EVEN_PACE=1: as before.
-	double even_real = 0, even_shown = 0, pass_avg = 0;
-	auto restart_clock = [&] { clock_t = SDL_GetTicksNS(); frame_clock = double(game_run); even_real = even_shown = 0; };
+	double even_real = 0, even_shown = 0, pass_avg = 0, dt_avg = 1.0 / 120;
+	auto restart_clock = [&] {
+		clock_t = SDL_GetTicksNS();
+		frame_clock = double(game_run);
+		even_real = even_shown = pass_avg = 0;
+		dt_avg = 1.0 / 120;
+	};
+	auto resume_clock = [&] {
+		restart_clock();
+		picture_budget = 1;
+		queue_avg = QUEUED * frame_bytes;
+		if (audio && !SDL_ClearAudioStream(audio))
+			fprintf(stderr, "sound: cannot clear queued audio after resume: %s\n", SDL_GetError());
+	};
 	int shot = 0;
 	// testing: M1_QUIT_AFTER=n runs n frames, saves build/host_last.png (the game's frame) and
 	// build/host_window.png (the window, menu and all) and quits; M1_MENU_KEYS="esc,down,enter"
@@ -2134,6 +2149,10 @@ int main(int argc, char **argv)
 			long at = -1;
 			if (sscanf(c, "%ld:%31[^,]", &at, what) != 2 || at != pass) continue;
 			fprintf(stderr, "test: pass %ld: %s\n", at, what);
+			if (!strcmp(what, "sleep")) {
+				clock_t -= 60000000000ull;
+				continue;
+			}
 			if (!strcmp(what, "stall") || !strcmp(what, "unstall")) {   // the sound device stops taking data
 				if (audio) { if (what[0] == 's') SDL_PauseAudioStreamDevice(audio); else SDL_ResumeAudioStreamDevice(audio); }
 				continue;
@@ -2152,6 +2171,7 @@ int main(int argc, char **argv)
 		const bool menu_was_open = menu.is_open();
 		while (SDL_PollEvent(&e)) {
 			if (e.type == SDL_EVENT_QUIT) running = false;
+			else if (e.type == SDL_EVENT_DID_ENTER_FOREGROUND) resume_clock();
 			else if (e.type == SDL_EVENT_RENDER_TARGETS_RESET || e.type == SDL_EVENT_RENDER_DEVICE_RESET) {
 				// Direct3D lost what render targets held (a device reset: every texture). The GPU's
 				// parts are made again whatever is on show (their old textures can't be used), and
@@ -2239,6 +2259,12 @@ int main(int argc, char **argv)
 			// M1_HIDDEN, M1_HZ high and M1_CAPTURE: every in-between picture, on a machine too slow to keep up)
 			static const double fixed_dt = getenv("M1_STEP_HZ") ? 1.0 / atof(getenv("M1_STEP_HZ")) : 0;
 			double dt = fixed_dt > 0 ? fixed_dt : double(now_ns - clock_t) / 1e9;
+			// Sleep and long suspensions are not game time. Reset the pacing filters too: feeding
+			// the gap into their averages can keep the game accelerated long after waking.
+			if (fixed_dt == 0 && dt > 0.5) {
+				resume_clock();
+				dt = 0;
+			}
 			clock_t = now_ns;
 			{   // (even steps: above, at frame_clock)
 				static const bool no_even = getenv("M1_NO_EVEN_PACE") != nullptr;
@@ -2287,7 +2313,6 @@ int main(int argc, char **argv)
 			// or 50, more under an FPS limit); the rest of the lost time is dropped and the clock
 			// carries on from there, its fraction kept, so the pictures go on at their pace. The
 			// sound's slack (QUEUED frames) covers it, and the 1% trim makes it up.
-			static double dt_avg = 1.0 / 120;
 			dt_avg += (std::min(dt, 0.1) - dt_avg) * 0.05;
 			const int pace = std::max(1, int(std::ceil(dt_avg * rate + 0.25)));
 			if (due > pace) {

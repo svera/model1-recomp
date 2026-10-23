@@ -1069,7 +1069,7 @@ static const uint8_t num_of_times[]={1,1,1,1,2,2,2,3};
 #endif
 float model1::compute_specular(glm::vec3& normal, glm::vec3& light, float diffuse, int lmode)
 {
-	if (!m_view->spec_enable)
+	if (!m_view->spec_enable || diffuse <= 0.0f)
 		return 0.0f;
 
 	const lightparam_t &lp = m_view->lightparams[lmode];

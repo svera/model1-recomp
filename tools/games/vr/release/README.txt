@@ -27,6 +27,7 @@ Up accelerates, Down brakes, X/Z shift up/down, C cycles the four cameras. Gamep
 steers, right trigger accelerates, left trigger brakes, Y / Triangle cycles cameras.
 The same bindings can be changed there; the game starts with
 the configured Start control.
+For manual transmission, hold Start on the course selection screen while confirming with Accelerator.
 
 Display settings, antialiasing, sound, and saves are available from the menu. All wide picture
 shapes, including 16:9 and 16:10, widen the view without stretching the HUD. Off-center HUD

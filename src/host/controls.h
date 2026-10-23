@@ -41,6 +41,7 @@ struct control_profile
 	std::array<const char *, C_COUNT> key_names{};    // key_<name> when it isn't name()
 	std::array<uint8_t, C_COUNT> bits{};              // the player's input byte's bits it presses (active high)
 	std::array<uint8_t, 2> start_bits{};              // each player's start button in the system byte
+	bool hold_start = false;                         // keep Start pressed after its initial pulse
 	std::array<std::array<SDL_Scancode, C_COUNT>, 2> keys{};   // the defaults, per player
 	std::array<int, C_COUNT> pad;                     // (PAD_NONE until set)
 	std::vector<int> pad_actions;                     // the pad buttons page's, in order (those with bits play)

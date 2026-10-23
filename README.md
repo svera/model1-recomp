@@ -1,15 +1,95 @@
-# Model 1 Recomp
+# Model 1 Recomps
+
+<p align="center"><b>SEGA's classic arcade games on your computer, with sharper graphics,
+widescreen support, and smooth motion at up to 120 FPS.</b></p>
 
 This project forks Mr. Finster's superb [Virtua Fighter recomp](https://github.com/mr-finster/vf1-recomp), refactoring it to support the rest of Sega's Model 1 arcade hardware games library as native desktop runtimes. The Model 1 was used by
 multiple games; this repository currently supports Virtua Racing.
 
-## Games
+<p align="center">macOS · Windows · Steam Deck / Linux</p>
 
-| Game | Support | Documentation |
+<p align="center"><img src="assets/games/vr/icon/icon.png" alt="Virtua Racing Recomp" width="160"></p>
+
+<h2 align="center">Virtua Racing Recomp</h2>
+
+<p align="center">
+  <img src="assets/games/vr/screenshots/bay-bridge.png" alt="Racing on Bay Bridge in widescreen" width="900">
+</p>
+
+> [!IMPORTANT]
+> You need your own **`vr.zip`** and **`model1io.zip`** ROM archives. Neither is included.
+> Both are needed for steering and pedals to work. This is an unofficial fan project,
+> not affiliated with or supported by SEGA.
+
+<p align="center">
+  <a href="https://github.com/svera/model1-recomp/releases">Download</a> ·
+  <a href="#getting-started">Getting started</a> ·
+  <a href="#controls">Controls</a> ·
+  <a href="https://github.com/svera/model1-recomp/issues">Report a bug</a>
+</p>
+
+### Features
+
+- All three courses, four camera views, and the original arcade racing.
+- Sharper graphics, widescreen and ultrawide views without stretching the HUD.
+- Original arcade motion or smoother 60 / 120 FPS.
+- Keyboard and gamepad support, with customizable controls.
+- Saved settings and high scores.
+- Car color, language, difficulty, and course settings.
+
+**Single-player only.** Split screen, linked cabinets, and online multiplayer are not supported.
+
+### Getting started
+
+1. [Download](https://github.com/svera/model1-recomp/releases) the package for your system and extract it.
+2. Keep **`vr.zip`** and **`model1io.zip`** together in the same folder. Leave them zipped.
+3. Start the game and select **`vr.zip`** when asked. It remembers your files for next time.
+4. Press **1** on the keyboard or **Start** on your gamepad to play.
+
+**macOS:** open **Virtua Racing Recomp.app**. If macOS blocks it, allow it through
+**System Settings > Privacy & Security**.
+
+**Windows:** run the included executable. Windows may show a SmartScreen warning for preview builds.
+
+**Steam Deck / Linux:** put both ROM archives in the package's **roms** folder and run
+**VirtuaRacing.sh** instead of using a file picker. On Steam Deck, add the launcher as a
+Non-Steam Game and set **Start In** to the extracted **VirtuaRacing** folder.
+
+### Controls
+
+| Action | Keyboard | Gamepad |
 | --- | --- | --- |
-| Virtua Racing | Startup native V60 recompilation; full single-cabinet game (no linked play) | [Virtua Racing guide](src/games/vr/README.md) |
+| Steer | Left / Right | Left stick |
+| Accelerate | Up | Right trigger |
+| Brake | Down | Left trigger |
+| Shift up / down | X / Z | Assign in Controls |
+| Change camera | C | Y / Triangle |
+| Start | 1 | Start |
+| Insert coin (Arcade mode) | 5 | Assign in Controls |
+| Open menu | Esc | View / Select |
 
-Each game requires the player's own MAME ROM set. No game ROMs or ROM-derived program code are included.
+Change bindings under **Controls > Player 1**.
+
+**Entering initials:** hold Left/Right to move through the letters, release to keep your
+selection, then press Accelerator to confirm.
+
+### Useful settings
+
+Open the menu with **Esc** or **View / Select**:
+
+- **Display:** change sharpness, screen shape, fullscreen, and frame rate.
+- **Game > Play style:** PC mode starts without coins; Arcade mode uses the cabinet's coin settings.
+- **Game:** choose your car color, language, course, and difficulty.
+- **Sound:** adjust the audio levels.
+
+Higher graphics settings need a faster computer. If play feels slow, lower the render scale
+or frame rate.
+
+### Screenshots
+
+| Big Forest · Beginner | Acropolis · Expert |
+| --- | --- |
+| ![Big Forest gameplay](assets/games/vr/screenshots/big-forest.png) | ![Acropolis gameplay](assets/games/vr/screenshots/acropolis.png) |
 
 ## Shared Model 1 implementation
 
@@ -21,8 +101,7 @@ audio, saves, and menus.
 Menu > **Display > Frame rate** selects **30**, **60**, or **120 FPS**. The 30 FPS arcade option
 disables interpolation; 60 and 120 use interpolated pictures. The choice applies immediately and
 is saved as `fps` in each game's `settings.ini` (default: 120). Game logic and audio retain their
-original timing. The screen's refresh rate and available performance limit the visible frame rate;
-the original arcade motion updates at approximately 29 FPS on this board.
+original timing. The screen's refresh rate and available performance limit the visible frame rate.
 
 The CPU renderer reproduces the arcade's 1x picture. Optional higher render scales, antialiasing, and GPU rendering
 are host-side features. On supported systems, the GPU renderer is checked against the CPU renderer and falls back

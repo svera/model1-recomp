@@ -100,6 +100,10 @@ menu (RmlUi), saves, the first-launch file picker, and the parts that go beyond 
   from the game's own panoramas.
 - **Pacing and a load governor.** The game runs on its own clock, trimmed to keep the sound queued. If a machine can't
   keep up, the governor turns off antialiasing and then lowers the render scale.
+  Returning to the foreground or a wall-clock gap over half a second resets the game clock, pacing averages,
+  and queued audio, so waking from sleep does not fast-forward through missed time.
+  `M1_HIDDEN=1 M1_QUIT_AFTER=240 M1_EVENTS_AT=80:sleep,160:sleep M1_TRACE=/tmp/resume.log build/bin/vr`
+  exercises two simulated one-minute gaps without displaying a window.
 - **Scene sync.** VF builds a new scene over several frames. The host holds the last complete picture until the new
   3D has settled, so scene changes don't show half-built frames.
 
@@ -357,6 +361,12 @@ the full picture with an isolated logo, requires every visible logo pixel to sur
 pixels when the foreground rule is disabled, and checks that pixels outside the logo are unchanged.
 The six ROM-backed cases cover 552 views. A hidden native-host run at 2x widescreen also drew 4,187
 Metal pictures, checked 140 against the CPU with zero differences, and reported no GPU errors or fallbacks.
+
+Specular highlights are rejected when the polygon normal faces away from the light. Without that
+check, the reflection formula produces a second highlight on the spinning logo's reverse side,
+briefly washing out its dark shade. `build/bin/model1_video_test build/vr --logo-shading` checks
+reverse-facing logo pixels in original-frame and interpolated pictures; the unit tests also check
+that front-facing highlights remain enabled.
 
 ## VR's animated palm ownership
 

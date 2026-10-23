@@ -13,6 +13,75 @@
 
 struct model1_video_test
 {
+	static void backface_specular()
+	{
+		model1::regions regions;
+		regions.title = game::id{ "vr" };
+		model1 m(std::move(regions));
+		m.m_view->spec_enable = true;
+		m.m_view->set_lightparam(0, 0.5f, 0.2f, 1.0f, 4);
+		glm::vec3 light(0, 0, 1), front(0, 0, 1), back(0, 0, -1), edge(1, 0, 0);
+		assert(m.compute_specular(front, light, 1, 0) > 0);
+		assert(m.compute_specular(back, light, -1, 0) == 0);
+		assert(m.compute_specular(edge, light, 0, 0) == 0);
+		m.m_view->spec_enable = false;
+		assert(m.compute_specular(front, light, 1, 0) == 0);
+	}
+
+	static void logo_shading(const char *dir)
+	{
+		model1 m(load_regions(dir, game::id{ "vr" }));
+		m.set_smooth(true);
+		m.reset();
+		bool saw_logo = false, back_only = true, hide_logo = false;
+		m.m_gameplay.object = [&](uint32_t, uint32_t poly, uint32_t, const float *) {
+			game::object_effects effect;
+			effect.hidden = poly != 0x1031c7 || hide_logo;
+			if (effect.hidden) return effect;
+			saw_logo = true;
+			effect.normal = [&](float &x, float &y, float &z) {
+				const glm::vec3 normal(x, y, z);
+				if (glm::dot(normal, normal) == 0) return;
+				glm::vec3 current = normal;
+				m.m_view->transform_vector(current);
+				back_only &= glm::dot(glm::normalize(current), m.m_view->light) < -0.5f;
+				if (m.m_shade_from && m.m_alpha < 1) {
+					for (const float *matrix : { m.m_shade_from, m.m_shade_to }) {
+						const glm::vec3 turned(
+							matrix[0] * x + matrix[3] * y + matrix[6] * z,
+							matrix[1] * x + matrix[4] * y + matrix[7] * z,
+							matrix[2] * x + matrix[5] * y + matrix[8] * z);
+						back_only &= glm::dot(glm::normalize(turned), m.m_view->light) < -0.5f;
+					}
+				}
+			};
+			return effect;
+		};
+		size_t checked = 0;
+		for (int f = 1; f <= 2800; f++) {
+			m.run_frame();
+			if (f < 280 || f % 2) continue;
+			for (double fraction : { 0.0, 0.5 }) {
+				saw_logo = false;
+				back_only = true;
+				m.render_smooth(double(m.frame_number() - 1) + fraction);
+				if (!saw_logo || !back_only) continue;
+				const size_t count = size_t(m.frame_w()) * m.frame_h();
+				const std::vector<uint32_t> logo(m.frame().data(), m.frame().data() + count);
+				hide_logo = true;
+				m.redraw();
+				hide_logo = false;
+				for (size_t i = 0; i < count; i++) {
+					if (logo[i] == m.frame().data()[i]) continue;
+					for (int shift : { 0, 8, 16 }) assert(((logo[i] >> shift) & 0xff) <= 0x60);
+					checked++;
+				}
+			}
+		}
+		assert(checked > 1000);
+		printf("VR reverse logo shading: %zu pixels retain their dark shade across arcade and interpolated pictures\n", checked);
+	}
+
 	static void race_grid_hud(const char *dir, const char *scenario, float aspect)
 	{
 		model1 m(load_regions(dir, game::id{ "vr" }));
@@ -836,6 +905,11 @@ struct model1_video_test
 
 int main(int argc, char **argv)
 {
+	model1_video_test::backface_specular();
+	if (argc > 2 && std::string(argv[2]) == "--logo-shading") {
+		model1_video_test::logo_shading(argv[1]);
+		return 0;
+	}
 	if (argc > 2 && std::string(argv[2]) == "--grid-hud") {
 		model1_video_test::race_grid_hud(argv[1]);
 		return 0;
@@ -876,6 +950,7 @@ int main(int argc, char **argv)
 			for (bool extended : { false, true })
 				model1_video_test::logo(argv[1], smooth, extended);
 	if (argc > 1) {
+		model1_video_test::logo_shading(argv[1]);
 		model1_video_test::race_grid_hud(argv[1]);
 		model1_video_test::logo_handoff(argv[1]);
 		model1_video_test::goal_fly_in(argv[1]);

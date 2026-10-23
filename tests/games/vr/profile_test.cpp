@@ -74,6 +74,8 @@ int main()
 	assert(std::string(game::vr::CONTROLS.label(C_UP)) == "Shift Up");
 	assert(std::string(game::vr::CONTROLS.key_name(C_UP)) == "shift_up");
 	assert(game::vr::CONTROLS.start_bits[0] == game::vr::CONTROLS.start_bits[1]);
+	assert(game::vr::CONTROLS.hold_start);
+	assert(!control_profile{}.hold_start);
 	auto remapped = controls;
 	remapped.load({ { "p1_key_camera", "V" }, { "p1_pad_camera", "a" } }, 0, game::vr::CONTROLS);
 	assert(remapped.key[game::vr::C_CAMERA] == SDL_SCANCODE_V);
