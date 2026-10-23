@@ -40,6 +40,7 @@
 #include <vector>
 #include <set>
 #include <cerrno>
+#include <climits>
 #include <cstring>
 #include <thread>
 #include <mutex>
@@ -693,6 +694,37 @@ std::string find_assets()
 	return "assets";
 }
 
+void set_window_icon(SDL_Window *win)
+{
+	int w = 0, h = 0, comp = 0;
+	const std::string packaged_icon = program_folder() + "icon.png";
+	unsigned char *pixels = stbi_load(packaged_icon.c_str(), &w, &h, &comp, 4);
+	std::string path = packaged_icon;
+	if (!pixels) {
+		path = find_assets() + "/games/" + std::string(host_game().name) + "/icon/icon.png";
+		pixels = stbi_load(path.c_str(), &w, &h, &comp, 4);
+	}
+	if (!pixels) {
+		fprintf(stderr, "window icon: couldn't load %s: %s\n", path.c_str(), stbi_failure_reason());
+		return;
+	}
+	if (w <= 0 || h <= 0 || w > INT_MAX / 4) {
+		fprintf(stderr, "window icon: invalid image dimensions in %s\n", path.c_str());
+		stbi_image_free(pixels);
+		return;
+	}
+	SDL_Surface *surface = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_RGBA32, pixels, w * 4);
+	if (!surface) {
+		fprintf(stderr, "window icon: couldn't create surface: %s\n", SDL_GetError());
+		stbi_image_free(pixels);
+		return;
+	}
+	if (!SDL_SetWindowIcon(win, surface))
+		fprintf(stderr, "window icon: couldn't set icon: %s\n", SDL_GetError());
+	SDL_DestroySurface(surface);
+	stbi_image_free(pixels);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -966,6 +998,7 @@ int main(int argc, char **argv)
 									   (fullscreen ? SDL_WINDOW_FULLSCREEN : 0) |
 									   (getenv("M1_HIDDEN") ? SDL_WINDOW_HIDDEN : 0));   // testing: never on screen
 	if (!win) return fail("Couldn't open the window");
+	set_window_icon(win);
 	SDL_HideCursor();
 	// Started from a terminal, the window can open behind it or without the keyboard (the keys go
 	// to the terminal): take it, and again once the first picture is up if it still isn't ours.
