@@ -1,5 +1,6 @@
 #!/bin/bash
-# The GPU's 3D shaders for SDL_GPU (src/gpu/gpu3d.hlsl), compiled with Microsoft's DXC into SPIR-V
+# The GPU's 3D shaders for SDL_GPU (src/gpu/gpu3d.hlsl), and Low antialiasing's edge pass for SDL's
+# gpu renderer (src/gpu/edge_aa.hlsl, a fragment shader), compiled with Microsoft's DXC into SPIR-V
 # (Vulkan: Linux, the Steam Deck, Windows without Direct3D 12) and DXIL (Direct3D 12: Windows),
 # into src/gpu/gpu3d_shaders.h, which is committed: the builds don't need DXC. Run after changing
 # gpu3d.hlsl.
@@ -11,12 +12,15 @@ cd "$(dirname "$0")/../.."
 OUT=build/shaders
 mkdir -p $OUT
 KERNELS="clear rows solid shadow pixels target"
-FLAGS="-T cs_6_0 -E main -HV 2021 -O3"   # (-Gis, IEEE strictness, for DXIL: SPIR-V's would need Vulkan 1.2; `precise` does it there)
+FLAGS="-T cs_6_0 -E main -HV 2021 -O3"
+PS_FLAGS="-T ps_6_0 -E main -HV 2021 -O3"   # (-Gis, IEEE strictness, for DXIL: SPIR-V's would need Vulkan 1.2; `precise` does it there)
 if [ -z "$DXC" ] && [ -n "$DXC_LINUX" ]; then
 	docker run --rm --platform linux/amd64 -v "$PWD":/src -v "$DXC_LINUX":/dxc -w /src -e LD_LIBRARY_PATH=/dxc/lib ubuntu:24.04 \
 		bash -c "for k in $KERNELS; do K=\$(echo \$k | tr a-z A-Z); \
 			/dxc/bin/dxc $FLAGS -D K_\$K -spirv -fspv-target-env=vulkan1.0 -Fo $OUT/\$k.spv src/gpu/gpu3d.hlsl || exit 1; \
-			/dxc/bin/dxc $FLAGS -D K_\$K -Gis -Fo $OUT/\$k.dxil src/gpu/gpu3d.hlsl || exit 1; done"
+			/dxc/bin/dxc $FLAGS -D K_\$K -Gis -Fo $OUT/\$k.dxil src/gpu/gpu3d.hlsl || exit 1; done; \
+		/dxc/bin/dxc $PS_FLAGS -spirv -fspv-target-env=vulkan1.0 -Fo $OUT/edge_aa.spv src/gpu/edge_aa.hlsl || exit 1; \
+		/dxc/bin/dxc $PS_FLAGS -Gis -Fo $OUT/edge_aa.dxil src/gpu/edge_aa.hlsl || exit 1"
 else
 	DXC=${DXC:-dxc}
 	for k in $KERNELS; do
@@ -24,11 +28,13 @@ else
 		$DXC $FLAGS -D K_$K -spirv -fspv-target-env=vulkan1.0 -Fo $OUT/$k.spv src/gpu/gpu3d.hlsl
 		$DXC $FLAGS -D K_$K -Gis -Fo $OUT/$k.dxil src/gpu/gpu3d.hlsl
 	done
+	$DXC $PS_FLAGS -spirv -fspv-target-env=vulkan1.0 -Fo $OUT/edge_aa.spv src/gpu/edge_aa.hlsl
+	$DXC $PS_FLAGS -Gis -Fo $OUT/edge_aa.dxil src/gpu/edge_aa.hlsl
 fi
-python3 - "$OUT" $KERNELS > src/gpu/gpu3d_shaders.h <<'PY'
+python3 - "$OUT" $KERNELS edge_aa > src/gpu/gpu3d_shaders.h <<'PY'
 import sys, hashlib
 out, kernels = sys.argv[1], sys.argv[2:]
-print("// Made by tools/gpu/shaders.sh from src/gpu/gpu3d.hlsl (DXC): don't edit.")
+print("// Made by tools/gpu/shaders.sh from src/gpu/gpu3d.hlsl and edge_aa.hlsl (DXC): don't edit.")
 print("#pragma once")
 print("#include <cstddef>")
 print("#include <cstdint>")
@@ -39,7 +45,7 @@ for k in kernels:
         for i in range(0, len(data), 24):
             print("\t" + ",".join(str(b) for b in data[i:i + 24]) + ",")
         print("};")
-src = open("src/gpu/gpu3d.hlsl", "rb").read()
+src = open("src/gpu/gpu3d.hlsl", "rb").read() + open("src/gpu/edge_aa.hlsl", "rb").read()
 print(f'static const char gpu3d_shaders_source_sha1[] = "{hashlib.sha1(src).hexdigest()}";')
 PY
 ls -la src/gpu/gpu3d_shaders.h

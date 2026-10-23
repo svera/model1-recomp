@@ -1,5 +1,8 @@
 // A small pool of worker threads for splitting a frame's drawing by rows.
 #pragma once
+#ifdef __APPLE__
+#include <pthread.h>
+#endif
 #include <algorithm>
 #include <cstdlib>
 #include <condition_variable>
@@ -73,9 +76,12 @@ private:
 	row_pool()
 	{
 		int n = std::clamp(int(std::thread::hardware_concurrency()) - 2, 0, 7);   // the CPU and sound keep theirs
-		if (const char *t = getenv("VF_THREADS")) n = std::clamp(atoi(t) - 1, 0, 63);   // testing: this many drawing threads in all
+		if (const char *t = getenv("M1_THREADS")) n = std::clamp(atoi(t) - 1, 0, 63);   // testing: this many drawing threads in all
 		for (int i = 0; i < n; i++)
 			m_workers.emplace_back([this] {
+#ifdef __APPLE__
+				pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 				unsigned seen = 0;
 				for (;;) {
 					std::unique_lock<std::mutex> l(m_mu);

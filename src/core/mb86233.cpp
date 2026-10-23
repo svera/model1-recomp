@@ -3,6 +3,15 @@
 // without the device framework: memory goes through mb86233_bus.
 #include "mb86233.h"
 #include <cstdarg>
+#include <cfenv>
+
+// The mode register's rounding field applies to the float ALU, so its arithmetic runs under the
+// host's matching rounding mode.
+#if defined(__clang__)
+#pragma STDC FENV_ACCESS ON
+#elif defined(_MSC_VER)
+#pragma fenv_access(on)
+#endif
 
 static void mb_log(const char *fmt, ...)
 {
@@ -539,6 +548,26 @@ void mb86233_device::write_mem_io_1(u32 r, u32 v)
 	ea_post_1(r);
 }
 
+// Mode bits 1-2 select the rounding, as cfxd decodes them: nearest, up, down, toward zero.
+// MAME applies them only to cfxd; Model 1's TGP programs select toward zero at startup, and
+// Virtua Racing's attract race only matches the arcade with its arithmetic rounded that way.
+int mb86233_device::host_rounding() const
+{
+	static const int modes[4] = { FE_TONEAREST, FE_UPWARD, FE_DOWNWARD, FE_TOWARDZERO };
+	return modes[(m_m >> 1) & 3];
+}
+
+int mb86233_device::run(int cycles)
+{
+	m_icount = cycles;
+	m_stalled = false;
+	const int host = fegetround();
+	fesetround(host_rounding());
+	execute_run();
+	fesetround(host);
+	return cycles - m_icount;
+}
+
 void mb86233_device::execute_run()
 {
 	while(m_icount > 0) {
@@ -807,6 +836,7 @@ void mb86233_device::execute_run()
 				// bit 0 = floating point
 				// bit 1-2 = rounding mode
 				m_m = opcode;
+				fesetround(host_rounding());
 				break;
 
 			default:

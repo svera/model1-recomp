@@ -3,6 +3,8 @@
 #include <mutex>
 #include "parallel.h"
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 // license:BSD-3-Clause
 // copyright-holders:Olivier Galibert
 
@@ -20,6 +22,8 @@
 enum { FRAC_SHIFT = 16 };
 enum { MOIRE = 0x01000000 };
 constexpr uint32_t MOIRE_MARK = 0x01000000;   // in a drawn pixel's unused top byte: already shaded
+constexpr int GEOMETRY_QUADS = 1000000;
+constexpr int GEOMETRY_POINTS = GEOMETRY_QUADS * 2;
 bool model1::s_moire_blend = false;
 int model1::s_mark_y1 = 1 << 30, model1::s_mark_y2 = -1;
 bool model1::s_hd_raster = false;
@@ -29,7 +33,7 @@ static int s_last_count = 0;           // the polygons in the last pass that not
 int model1::s_depth_w = 0;
 int model1::s_depth_pass = 0;
 thread_local int model1::s_cur_quad = 0;
-thread_local bool model1::s_cur_fshadow = false;
+thread_local bool model1::s_cur_mshadow = false;
 // The polygons are drawn in row bands, several at once (draw_quads): each band notes its own
 // shaded rows (merged after) and only plots its own rows of a wireframe line, which is clipped
 // against the whole view as before so its pixels don't change.
@@ -37,7 +41,7 @@ static thread_local int t_mark_y1 = 1 << 30, t_mark_y2 = -1;
 static thread_local int t_band_y1 = -(1 << 30), t_band_y2 = 1 << 30;
 static thread_local rectangle t_full_clip;
 static thread_local bool t_banded = false;
-std::vector<uint8_t> model1::s_qstage;
+std::vector<uint8_t> model1::s_qscenery;
 // Recording for the GPU at 1x: the rasterizer's own spans, kept instead of drawn
 static thread_local std::vector<gpu3d_span> *t_sink = nullptr;
 static thread_local uint32_t t_sink_poly = 0;
@@ -82,7 +86,7 @@ void model1::fill_quad_hd(bitmap_rgb32 &bitmap, view_t *view, const quad_t &q, i
 			int xa = std::max(view->x1, int(std::ceil(xs[k] - 0.5f)));
 			int xb = std::min(view->x2, int(std::ceil(xs[k + 1] - 0.5f)) - 1);
 			if (xa > xb) continue;
-			if (s_depth_pass && s_cur_fshadow) {   // a fighter's shadow
+			if (s_depth_pass && s_cur_mshadow) {   // a moving model's shadow
 				uint32_t *pix = &bitmap.pix(y);
 				const int32_t *own = &s_owner[size_t(y) * s_depth_w];
 				for (int x = xa; x <= xb; x++) {
@@ -93,7 +97,7 @@ void model1::fill_quad_hd(bitmap_rgb32 &bitmap, view_t *view, const quad_t &q, i
 						continue;
 					}
 					const int o = own[x] - s_owner_base - 1;     // the polygon that painted it (< 0: none)
-					if ((pix[x] & MOIRE_MARK) || (o >= 0 && !s_qstage[o])) continue;   // not on a fighter
+					if ((pix[x] & MOIRE_MARK) || (o >= 0 && !s_qscenery[o])) continue;   // not on a model
 					t_mark_y1 = std::min(t_mark_y1, y);
 					t_mark_y2 = std::max(t_mark_y2, y);
 					pix[x] = MOIRE_MARK | (((pix[x] >> 1) & 0x7f7f7f) + ((uint32_t(color) >> 1) & 0x7f7f7f));
@@ -401,6 +405,17 @@ void model1::fill_quad(bitmap_rgb32 &bitmap, view_t *view, const quad_t& q) cons
 {
 	spoint_t p[8];
 	int color = q.col;
+	if (m_gameplay.wireframe) {
+		const auto col = m_gameplay.wireframe(q.obj, q.col);
+		if (!col) return;
+		const rectangle clip = t_banded ? t_full_clip : rectangle(view->x1, view->x2, view->y1, view->y2);
+		for (int i = 0; i < 4; i++) {
+			const point_t *a = q.p[i], *b = q.p[(i + 1) & 3];
+			if (a->s.x != b->s.x || a->s.y != b->s.y)
+				draw_wireframe_line(bitmap, clip, a->s.x, a->s.y, b->s.x, b->s.y, *col, false);
+		}
+		return;
+	}
 
 	if (color < 0)
 	{
@@ -658,6 +673,8 @@ static int comp_quads(const void *q1, const void *q2)
 
 int model1::quad_t::compare(const model1::quad_t* other) const
 {
+	if (foreground != other->foreground)
+		return foreground ? +1 : -1;
 	float z2 = other->z;
 
 	if (z < z2)
@@ -727,18 +744,18 @@ void model1::draw_quads(bitmap_rgb32 &bitmap, const rectangle &cliprect)
 // The CPU's drawing of the list (m_quadind's first `count`) within the view's clip
 void model1::raster_quads(bitmap_rgb32 &bitmap, view_t *view, int count)
 {
-	// debug: VF_PICK=x,y,frame prints every polygon that writes that pixel on that frame
+	// debug: M1_PICK=x,y,frame prints every polygon that writes that pixel on that frame
 	static int pick_x = -1, pick_y = -1, pick_f = -1;
-	static const char *pick_env = getenv("VF_PICK");
+	static const char *pick_env = getenv("M1_PICK");
 	if (pick_x < 0 && pick_env) sscanf(pick_env, "%d,%d,%d", &pick_x, &pick_y, &pick_f);
 	const bool picking = pick_x >= 0 && int(m_frame) == pick_f && pick_x < bitmap.width() && pick_y < bitmap.height();
 	// Above 1x (with the blended shadows): the polygons paint in the arcade's order, noting which
-	// painted each pixel, and a fighter's shadow doesn't shade a fighter (the arcade's
+	// painted each pixel, and a moving model's shadow doesn't shade a model (the arcade's
 	// one-depth-per-polygon sort let it paint over one lying on the floor). VF's shadows sit off
-	// the floor, so depth can't tell floor from fighter; the model can: the stages' come first in
-	// the polygon data, the fighters' from 80000 on.
-	static const bool no_depth = getenv("VF_NO_SHADOW_DEPTH") != nullptr;   // testing: the arcade's order
-	const bool depth = s_hd_raster && s_moire_blend && !no_depth;
+	// the floor, so depth can't tell floor from fighter; the model can: the scenery comes first in
+	// the polygon data (VF's stages; the fighters from 80000 on: video_traits::scenery_polys_end).
+	static const bool no_depth = getenv("M1_NO_SHADOW_DEPTH") != nullptr;   // testing: the arcade's order
+	const bool depth = s_hd_raster && s_moire_blend && !no_depth && m_video->scenery_polys_end;
 	if (depth) {
 		// the owners: numbered above every earlier pass's (and the buffer cleared when they run out),
 		// instead of clearing the picture's worth each time
@@ -750,14 +767,14 @@ void model1::raster_quads(bitmap_rgb32 &bitmap, view_t *view, int count)
 		} else
 			s_owner_base += s_last_count + 1;
 		s_last_count = count;
-		s_qstage.resize(count);
-		for (int i = 0; i < count; i++) s_qstage[i] = stage_model(m_quadind[i]->obj);
+		s_qscenery.resize(count);
+		for (int i = 0; i < count; i++) s_qscenery[i] = scenery_model(m_quadind[i]->obj);
 		s_depth_pass = 1;
 	}
-	struct pass_end { ~pass_end() { s_depth_pass = 0; s_cur_fshadow = false; } } pass_end_;
+	struct pass_end { ~pass_end() { s_depth_pass = 0; s_cur_mshadow = false; } } pass_end_;
 	// Above 1x: the rows in bands, a thread each, every band drawing all the polygons in order
 	// within its rows: the same picture, several times faster. (Picking prints, so stays serial.)
-	static const bool serial = getenv("VF_SERIAL_POLYS") != nullptr;   // testing: the one-thread path
+	static const bool serial = getenv("M1_SERIAL_POLYS") != nullptr;   // testing: the one-thread path
 	if (s_hd_raster && !picking && !serial && count > 0 && view->y2 >= view->y1) {
 		const rectangle full(view->x1, view->x2, view->y1, view->y2);
 		const view_t vbase = *view;
@@ -768,13 +785,13 @@ void model1::raster_quads(bitmap_rgb32 &bitmap, view_t *view, int count)
 			v.y2 = vbase.y1 + r1 - 1;
 			t_banded = true; t_full_clip = full; t_band_y1 = v.y1; t_band_y2 = v.y2;
 			t_mark_y1 = 1 << 30; t_mark_y2 = -1;
-			s_cur_fshadow = false;
+			s_cur_mshadow = false;
 			for (int i = 0; i < count; i++) {
 				s_cur_quad = i;
-				s_cur_fshadow = depth && fighter_shadow(*m_quadind[i]);
+				s_cur_mshadow = depth && model_shadow(*m_quadind[i]);
 				fill_quad(bitmap, &v, *m_quadind[i]);
 			}
-			s_cur_fshadow = false;
+			s_cur_mshadow = false;
 			t_banded = false; t_band_y1 = -(1 << 30); t_band_y2 = 1 << 30;
 			std::lock_guard<std::mutex> lk(marks);
 			s_mark_y1 = std::min(s_mark_y1, t_mark_y1);
@@ -787,7 +804,7 @@ void model1::raster_quads(bitmap_rgb32 &bitmap, view_t *view, int count)
 	for (int i = 0; i < count; i++)
 	{
 		s_cur_quad = i;
-		s_cur_fshadow = depth && fighter_shadow(*m_quadind[i]);
+		s_cur_mshadow = depth && model_shadow(*m_quadind[i]);
 		uint32_t before = picking ? bitmap.pix(pick_y, pick_x) : 0;
 		fill_quad(bitmap, view, *m_quadind[i]);
 		if (picking && bitmap.pix(pick_y, pick_x) != before) {
@@ -901,8 +918,22 @@ void model1::fclip_clip_right(view_t *view, point_t *pt, point_t *p1, point_t *p
 
 void model1::fclip_push_quad_next(int level, quad_t& q, point_t *p1, point_t *p2, point_t *p3, point_t *p4)
 {
-	quad_t cquad(q.col, q.z, p1, p2, p3, p4);
+	quad_t cquad(q);
+	cquad.p[0] = p1;
+	cquad.p[1] = p2;
+	cquad.p[2] = p3;
+	cquad.p[3] = p4;
 	fclip_push_quad(level+1, cquad);
+}
+
+void model1::require_geometry_space(int points, int quads) const
+{
+	if (m_pointpt - m_pointdb.get() + points > GEOMETRY_POINTS ||
+		m_quadpt - m_quaddb.get() + quads > GEOMETRY_QUADS) {
+		fprintf(stderr, "Model 1 renderer: geometry capacity exceeded (%td points, %td quads)\n",
+			m_pointpt - m_pointdb.get(), m_quadpt - m_quaddb.get());
+		std::abort();
+	}
 }
 
 void model1::fclip_push_quad(int level, quad_t& q)
@@ -911,6 +942,7 @@ void model1::fclip_push_quad(int level, quad_t& q)
 
 	if (level == 4)
 	{
+		require_geometry_space(0, 1);
 		M1_LOG(LOG_TGP, "VIDEOCQ %d", level);
 		for (int i = 0; i < 4; i++)
 			M1_LOG(LOG_TGP, " (%f, %f, %f)", q.p[i]->x, q.p[i]->y, q.p[i]->z);
@@ -949,6 +981,7 @@ void model1::fclip_push_quad(int level, quad_t& q)
 			break;
 
 	point_t* pt[4];
+	require_geometry_space(4, 0);
 	bool is_out2[4];
 	for (int j = 0; j < 4; j++)
 	{
@@ -1036,7 +1069,7 @@ static const uint8_t num_of_times[]={1,1,1,1,2,2,2,3};
 #endif
 float model1::compute_specular(glm::vec3& normal, glm::vec3& light, float diffuse, int lmode)
 {
-	if (!m_view->spec_enable)
+	if (!m_view->spec_enable || diffuse <= 0.0f)
 		return 0.0f;
 
 	const lightparam_t &lp = m_view->lightparams[lmode];
@@ -1064,19 +1097,15 @@ float model1::compute_specular(glm::vec3& normal, glm::vec3& light, float diffus
 // the preceding object so the z~40k wall occludes them (real-hardware
 // capture); resetting per object made them sort at z=0 (nearest) and paint
 // through the wall.
-void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, float &old_z)
+void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, float &old_z, uint32_t owner)
 {
 	// Protect against bad data when attacking a super destroyer
 	if(tex_adr == 0xffffffff || size >= 0x1000000)
 		return;
-	// VF's name entry: the wheel's letters N-Z, the symbols and BACK take their colours from the
-	// block at 94000, END from 94040, which the game fills with FFFF at boot and never sets: MAME
-	// (and we, before) drew them black. Cabinet captures (the user's, 2026-10-13: "Congratulations!"
-	// 26 and 24) show them blue and END red, front and back alike; the palette's pens 0x372 (blue)
-	// and 0x373 (red) are those colours and nothing else uses them. Only these two blocks, only
-	// with FFFF in them, and only the wheel's letter models (380a36-381c2d), which no other scene
-	// draws.
-	const int ne_pen = (poly_adr >= 0x380a36 && poly_adr <= 0x381c2d) ? tex_adr == 0x94000 ? 0x372 : tex_adr == 0x94040 ? 0x373 : 0 : 0;
+	// a texture block the game leaves unset, coloured as the cabinet shows it (game::video_traits)
+	int unset_pen = 0;
+	for (const auto &u : m_video->unset_texture_pens)
+		if (poly_adr >= u.poly_first && poly_adr <= u.poly_last && tex_adr == u.texture) unset_pen = u.pen;
 
 #if 0
 	int dump;
@@ -1088,7 +1117,18 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 	else
 		poly_data = (float *)m_poly_rom;
 
+	const bool foreground = std::find(m_video->foreground_objects.begin(), m_video->foreground_objects.end(), poly_adr) != m_video->foreground_objects.end();
 	poly_adr &= 0x7fffff;
+	game::object_effects effect;
+	if (m_gameplay.object) effect = m_gameplay.object(owner, tex_adr, poly_adr, size, poly_data);
+	if (effect.hidden) return;
+	const float original_viewx = m_view->viewx;
+	const bool pin_object = hud_edge_pinning_active() &&
+		std::find(m_video->right_edge_objects.begin(), m_video->right_edge_objects.end(), poly_adr) != m_video->right_edge_objects.end();
+	if (pin_object) {
+		m_view->viewx += m_ext;
+		m_view->recompute_frustum();
+	}
 #if 0
 	dump = poly_adr == 0x944ea;
 	dump = 0;
@@ -1115,6 +1155,7 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 	if (!size)
 		size = 0xffffffff;
 
+	require_geometry_space(2, 0);
 	point_t *old_p0 = m_pointpt++;
 	point_t *old_p1 = m_pointpt++;
 
@@ -1124,6 +1165,10 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 	old_p1->x = poly_data[poly_adr + 3];
 	old_p1->y = poly_data[poly_adr + 4];
 	old_p1->z = poly_data[poly_adr + 5];
+	if (effect.point) {
+		effect.point(old_p0->x, old_p0->y, old_p0->z);
+		effect.point(old_p1->x, old_p1->y, old_p1->z);
+	}
 	m_view->transform_point(old_p0);
 	m_view->transform_point(old_p1);
 
@@ -1171,17 +1216,24 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 		// is the top bit of the texture parameter index.
 		int lightmode = ((flags >> 17) & 15) | ((flags & 0x00400000) ? 0x80 : 0);
 
+		require_geometry_space(2, 0);
 		point_t *p0 = m_pointpt++;
 		point_t *p1 = m_pointpt++;
 
 		glm::vec3 vn(poly_data[poly_adr + 1], poly_data[poly_adr + 2], poly_data[poly_adr + 3]);
-		const glm::vec3 vn_model = vn;
 		p0->x = poly_data[poly_adr + 4];
 		p0->y = poly_data[poly_adr + 5];
 		p0->z = poly_data[poly_adr + 6];
 		p1->x = poly_data[poly_adr + 7];
 		p1->y = poly_data[poly_adr + 8];
 		p1->z = poly_data[poly_adr + 9];
+		if (effect.normal) effect.normal(vn.x, vn.y, vn.z);
+		if (effect.point) {
+			effect.point(p0->x, p0->y, p0->z);
+			effect.point(p1->x, p1->y, p1->z);
+		}
+		const glm::vec3 vn_model = vn;
+		if (effect.lightmode >= 0) lightmode = effect.lightmode;
 
 		if (type == 2)
 		{
@@ -1231,6 +1283,8 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 #endif
 
 		quad_t cquad;
+		cquad.foreground = foreground;
+		int appearance = 0;
 
 		if (!link)
 			goto next;
@@ -1270,6 +1324,10 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 			cquad.col = scale_color(m_pens[0x1000 | (m_tgp_ram[tex_adr - 0x40000] & 0x3ff)], MIN(1.0, ln));
 #endif
 
+			if (effect.polygon) {
+				appearance = effect.polygon(i);
+				if (appearance < 0) goto next;
+			}
 			// the shade: from the normal turned by the object's matrix and the light
 			auto lum_of = [&](glm::vec3 n, glm::vec3 light) {
 				float dif = glm::dot(n, light);
@@ -1295,7 +1353,8 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 			// flat UI element (radar blips, HUD text) drawn unlit, and mode 01
 			// additionally blinks by rotating the BGR channels on alternate frames.
 			uint16_t tex_data = m_tgp_ram[tex_adr - 0x40000];
-			if (ne_pen && tex_data == 0xffff) tex_data = uint16_t(0xfc00 | ne_pen);   // (see above; still unlit)
+			if (unset_pen && tex_data == 0xffff) tex_data = uint16_t(0xfc00 | unset_pen);   // (see above; still unlit)
+			if (effect.material) tex_data = effect.material(tex_data);
 			int color = m_paletteram16[0x1000 | (tex_data & 0x3ff)];
 			int r = (color >> 0x0) & 0x1f;
 			int g = (color >> 0x5) & 0x1f;
@@ -1309,6 +1368,7 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 				g = tmp;
 			}
 
+			if (effect.colour) effect.colour(poly_adr, appearance, r, g, b);
 			auto colour_of = [&](int lum) {
 				lum >>= 2; //there must be a luma translation table somewhere
 				if (lum > 0x3f)
@@ -1358,14 +1418,21 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 				break;
 		}
 	}
+	if (pin_object) {
+		m_view->viewx = original_viewx;
+		m_view->recompute_frustum();
+	}
 }
 
 
 int model1::push_direct(int list_offset) {
 	uint32_t tex_adr = readi(list_offset + 2);
+	point_t *const first_point = m_pointpt;
+	quad_t *const first_quad = m_quadpt;
 	//  v1      = readi(list_offset+2+2);
 	//  v2      = readi(list_offset+2+10);
 
+	require_geometry_space(2, 0);
 	point_t *old_p0 = m_pointpt++;
 	point_t *old_p1 = m_pointpt++;
 
@@ -1405,6 +1472,7 @@ int model1::push_direct(int list_offset) {
 		// list+2+4 is 0?
 		// list+2+12 is z?
 
+		require_geometry_space(2, 1);
 		point_t *p0 = m_pointpt++;
 		point_t *p1 = m_pointpt++;
 
@@ -1529,8 +1597,39 @@ int model1::push_direct(int list_offset) {
 			break;
 		}
 	}
+	pin_hud_direct(first_point, first_quad);
 	list_offset += 4;
 	return list_offset;
+}
+
+void model1::pin_hud_direct(point_t *points, quad_t *quads)
+{
+	if (!hud_edge_pinning_active()) return;
+	const size_t count = size_t(m_pointpt - points);
+	std::vector<size_t> parent(count);
+	for (size_t i = 0; i < count; i++) parent[i] = i;
+	auto root = [&](size_t i) {
+		while (parent[i] != i) {
+			parent[i] = parent[parent[i]];
+			i = parent[i];
+		}
+		return i;
+	};
+	for (quad_t *q = quads; q < m_quadpt; q++)
+		for (int i = 1; i < 4; i++)
+			parent[root(size_t(q->p[i] - points))] = root(size_t(q->p[0] - points));
+
+	std::vector<float> left(count, float(SCREEN_W)), right(count, 0);
+	for (size_t i = 0; i < count; i++) {
+		const size_t group = root(i);
+		const float x = points[i].fx / m_view->scale - m_view->ext;
+		left[group] = std::min(left[group], x);
+		right[group] = std::max(right[group], x);
+	}
+	for (size_t i = 0; i < count; i++) {
+		const size_t group = root(i);
+		pin_hud_point(&points[i], hud_edge_offset(left[group], right[group]));
+	}
 }
 
 int model1::skip_direct(int list_offset) const
@@ -1603,8 +1702,9 @@ const uint16_t *model1::picture_list()
 	set_current_render_list();
 	int cur = m_display_list_current == m_display_list1 ? 1 : 0;
 	auto age = [&](int b) { return m_list_written[b] == ~0ull ? ~0ull : m_frame - m_list_written[b]; };
-	static const bool as_selected = getenv("VF_LIST_AS_SELECTED") != nullptr;   // testing: the old way
+	static const bool as_selected = getenv("M1_LIST_AS_SELECTED") != nullptr;   // testing: the old way
 	if (!as_selected && age(cur) > 8 && age(cur ^ 1) <= 2) cur ^= 1;
+	m_picture_buffer = cur;
 	return cur ? m_display_list1 : m_display_list0;
 }
 
@@ -1665,7 +1765,7 @@ void model1::view_t::init_translation_matrix()
 
 void model1::view_t::set_viewport(float xcenter, float ycenter, float xl, float xr, float yb, float yt)
 {
-	static const bool log_viewport = getenv("VF_LOG_VIEWPORT") != nullptr;
+	static const bool log_viewport = getenv("M1_LOG_VIEWPORT") != nullptr;
 	if (log_viewport) {
 		static std::set<std::array<int, 6>> seen;
 		std::array<int, 6> k{int(xcenter), int(ycenter), int(xl), int(xr), int(yb), int(yt)};
@@ -1723,7 +1823,7 @@ void model1::view_t::set_light_direction(float x, float y, float z)
 	light = light_vector(x, y, z);
 }
 
-void model1::view_t::set_translation_matrix(float* mat)
+void model1::view_t::set_translation_matrix(const float *mat)
 {
 	for (int i = 0; i < 12; i++)
 	{
@@ -1753,8 +1853,15 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 
 		m_view->init_translation_matrix();
 		float old_z = 0;
+		uint32_t owner = 0;
+		if (m_gameplay.render_begin) m_gameplay.render_begin();
+		struct render_scope {
+			std::function<void()> &end;
+			~render_scope() { if (end) end(); }
+		} scope{m_gameplay.render_end};
 
 		int list_offset = 0;
+		bool retained_drawn = false;
 		for (;;) {
 			int type = readi(list_offset + 0);
 
@@ -1773,11 +1880,11 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 					if (m_replaying && smooth_matrix(readi(list_offset + 4), blended)) {
 						memcpy(current, m_view->translation, sizeof current);
 						m_view->set_translation_matrix(blended);
-						push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z);
+						push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z, owner);
 						m_view->set_translation_matrix(current);
 						m_shade_from = m_shade_to = m_shade_light = nullptr;
 					} else
-						push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z);
+						push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z, owner);
 				}
 				list_offset += 8;
 				break;
@@ -1785,7 +1892,7 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 				// command 0x41 = object drawn above the HUD (e.g. SWA radar blips)
 				m_above_hud_seen = true;
 				if (pass == RENDER_ABOVE_HUD)
-					push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z);
+					push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z, owner);
 				list_offset += 8;
 				break;
 			case 2:
@@ -1896,12 +2003,83 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 				}
 				m_view->set_translation_matrix(mat);
 				if (m_replaying) m_replay_slot++;
+				owner = 0;
+				if (m_replaying) {
+					const auto &slots = m_logic[m_replay_older ? 0 : 1].slots;
+					if (m_replay_slot >= 0 && size_t(m_replay_slot) < slots.size()) owner = slots[m_replay_slot].owner;
+				} else {
+					const int buffer = m_display_list_current == m_display_list1 ? 1 : 0;
+					if (!m_list_owner[buffer].empty()) owner = m_list_owner[buffer][list_offset & 0x7fff];
+				}
+				if (m_replaying && pass == RENDER_BELOW_HUD && !retained_drawn) {
+					const auto &slots = m_logic[m_replay_older ? 0 : 1].slots;
+					if (m_replay_slot >= 0 && size_t(m_replay_slot) < slots.size() && slots[m_replay_slot].visibility) {
+						retained_drawn = true;
+						const int saved_slot = m_replay_slot;
+						const auto saved_light = m_view->light;
+						float retained_z = old_z;
+						for (size_t i = 0; i < slots.size(); i++) {
+							const auto &part = slots[i];
+							if (!part.retained) continue;
+							m_replay_slot = int(i);
+							if (part.has_light) m_view->light = glm::vec3(part.light[0], part.light[1], part.light[2]);
+							for (const auto &object : part.objects) {
+								float blended[12];
+								m_view->set_translation_matrix(smooth_matrix(object.polygon, blended) ? blended : part.mat);
+								quad_t *first = m_quadpt;
+								push_object(object.texture, object.polygon, object.size, retained_z, part.owner);
+								for (quad_t *q = first; q < m_quadpt; q++) q->obj = object.polygon;
+								m_shade_from = m_shade_to = m_shade_light = nullptr;
+							}
+						}
+						m_replay_slot = saved_slot;
+						m_view->light = saved_light;
+						m_view->set_translation_matrix(mat);
+					}
+				}
+				if (pass == RENDER_BELOW_HUD) {
+					const std::vector<game::render_object> *extra = nullptr;
+					if (m_replaying) {
+						const auto &slots = m_logic[m_replay_older ? 0 : 1].slots;
+						if (m_replay_slot >= 0 && size_t(m_replay_slot) < slots.size()) extra = &slots[m_replay_slot].extra;
+					} else {
+						const int buffer = m_display_list_current == m_display_list1 ? 1 : 0;
+						if (auto it = m_list_extra[buffer].find(list_offset); it != m_list_extra[buffer].end()) extra = &it->second;
+					}
+					float extra_z = old_z;
+					if (extra)
+						for (const auto &object : *extra) {
+							float blended[12];
+							if (m_replaying && smooth_matrix(object.polygon, blended)) m_view->set_translation_matrix(blended);
+							if (object.transform) {
+								const auto &local = *object.transform;
+								float parent[12];
+								std::copy_n(m_view->translation, 12, parent);
+								for (int c = 0; c < 3; c++)
+									for (int r = 0; r < 3; r++)
+										blended[c * 3 + r] = parent[r] * local[c * 3] +
+											parent[3 + r] * local[c * 3 + 1] + parent[6 + r] * local[c * 3 + 2];
+								for (int r = 0; r < 3; r++)
+									blended[9 + r] = parent[9 + r] + parent[r] * local[9] +
+										parent[3 + r] * local[10] + parent[6 + r] * local[11];
+								m_view->set_translation_matrix(blended);
+							}
+							quad_t *first = m_quadpt;
+							push_object(object.texture, object.polygon, object.size, extra_z, object.owner ? object.owner : owner);
+							for (quad_t *q = first; q < m_quadpt; q++) q->obj = object.polygon;
+							m_view->set_translation_matrix(mat);
+							m_shade_from = m_shade_to = m_shade_light = nullptr;
+						}
+				}
 				list_offset += 26;
 				break;
 			}
 			case 0xc:
 				M1_LOG(LOG_TGP, "VIDEO:   trans (%f, %f)\n", readf(list_offset + 2), readf(list_offset + 4));
-				m_view->set_view_translation(readf(list_offset + 2), readf(list_offset + 4));
+				{
+					const float x = readf(list_offset + 2), y = readf(list_offset + 4);
+					m_view->set_view_translation(x + hud_view_offset(x, y), y);
+				}
 				list_offset += 6;
 				break;
 			case 0xf:
@@ -2034,9 +2212,9 @@ void model1::video_start()
 
 	m_poly_ram = make_unique_clear<uint32_t[]>(0x400000);
 	m_tgp_ram = make_unique_clear<uint16_t[]>(0x100000-0x40000);
-	m_pointdb = std::make_unique<point_t[]>(1000000*2);
-	m_quaddb  = std::make_unique<quad_t[]>(1000000);
-	m_quadind = make_unique_clear<quad_t *[]>(1000000);
+	m_pointdb = std::make_unique<point_t[]>(GEOMETRY_POINTS);
+	m_quaddb  = std::make_unique<quad_t[]>(GEOMETRY_QUADS);
+	m_quadind = make_unique_clear<quad_t *[]>(GEOMETRY_QUADS);
 	m_overlay_stride = m_bitmap.width();   // the overlay buffers: made when first needed
 
 	m_pointpt = &m_pointdb[0];
@@ -2112,8 +2290,8 @@ void model1::screen_vblank_model1(int state)
 void model1::record_quads(view_t *view, int count)
 {
 	const uint64_t t0 = trace_ns();
-	static const bool no_depth = getenv("VF_NO_SHADOW_DEPTH") != nullptr;
-	const bool depth = s_hd_raster && s_moire_blend && !no_depth;
+	static const bool no_depth = getenv("M1_NO_SHADOW_DEPTH") != nullptr;
+	const bool depth = s_hd_raster && s_moire_blend && !no_depth && m_video->scenery_polys_end;
 	const uint32_t batch = uint32_t(m_rec_batches.size());
 	m_rec_batches.push_back({ view->x1, view->x2, view->y1, view->y2, m_rec_quads.size(), size_t(count) });
 	for (int i = 0; i < count; i++) {
@@ -2152,10 +2330,10 @@ void model1::record_quads(view_t *view, int count)
 		gpu3d_poly g;
 		g.cx0 = view->x1; g.cx1 = view->x2; g.cy0 = view->y1; g.cy1 = view->y2;
 		g.batch = batch;
-		const bool fighter = depth && fighter_shadow(q);
-		if (fighter) g.flags |= G3_FIGHTER | G3_SHADOW;
+		const bool mshadow = depth && model_shadow(q);
+		if (mshadow) g.flags |= G3_MODEL_SHADOW | G3_SHADOW;
 		else if (color & MOIRE) g.flags |= s_moire_blend ? G3_SHADOW : G3_CHECKER;
-		if (stage_model(q.obj)) g.flags |= G3_STAGE;
+		if (scenery_model(q.obj)) g.flags |= G3_SCENERY;
 		g.colour = (g.flags & G3_CHECKER) ? uint32_t(color) & 0xffffff : uint32_t(color);
 		const uint32_t idx = uint32_t(m_rec_polys.size());
 		int ya, yb;
@@ -2165,7 +2343,7 @@ void model1::record_quads(view_t *view, int count)
 				g.x[k] = q.p[k]->fx; g.y[k] = q.p[k]->fy;
 				ok = ok && std::fabs(g.x[k]) < 1e7f && std::fabs(g.y[k]) < 1e7f;   // (NaN fails too)
 			}
-			if (!ok) { if (!m_rec_bad && getenv("VF_LOG_GPU3D")) fprintf(stderr, "gpu3d: a vertex out of range (frame %llu, obj %06x: %g,%g %g,%g %g,%g %g,%g)\n", (unsigned long long)m_frame, q.obj, g.x[0], g.y[0], g.x[1], g.y[1], g.x[2], g.y[2], g.x[3], g.y[3]); m_rec_bad = true; continue; }
+			if (!ok) { if (!m_rec_bad && getenv("M1_LOG_GPU3D")) fprintf(stderr, "gpu3d: a vertex out of range (frame %llu, obj %06x: %g,%g %g,%g %g,%g %g,%g)\n", (unsigned long long)m_frame, q.obj, g.x[0], g.y[0], g.x[1], g.y[1], g.x[2], g.y[2], g.x[3], g.y[3]); m_rec_bad = true; continue; }
 			const float ymin = std::min({ g.y[0], g.y[1], g.y[2], g.y[3] }), ymax = std::max({ g.y[0], g.y[1], g.y[2], g.y[3] });
 			ya = std::max(view->y1, int(std::ceil(ymin - 0.5f)));
 			yb = std::min(view->y2, int(std::ceil(ymax - 0.5f)) - 1);
@@ -2196,7 +2374,7 @@ void model1::gpu3d_begin(const bitmap_rgb32 &bitmap)
 {
 	m_bitmap_rec_w = bitmap.width(); m_bitmap_rec_h = bitmap.height();
 	m_rec = true;
-	m_rec_bad = false;
+	m_rec_bad = bool(m_gameplay.wireframe);
 	m_rec_batches.clear(); m_rec_quads.clear(); m_rec_points.clear(); m_rec_polys.clear(); m_rec_spans.clear();
 	m_rec_rows = 0;
 	m_rec_y0 = m_rec_m0 = 1 << 30;
@@ -2234,9 +2412,10 @@ void model1::gpu3d_end(bitmap_rgb32 &bitmap)
 		memcpy(m_check_cpu.data(), bitmap.data(), size_t(bitmap.width()) * bitmap.height() * 4);
 	}
 	// Put together in parts on the 3D's own device: straight into the host's texture, nothing back
-	// (but a picture checked against the CPU's, or Low's smoothing, which reads the 3D's pixels, as
-	// before). A failure there: the usual way from now on.
-	if (m_g3_target && m_parts && !check && !m_rec_bad && !m_edge_aa && !m_rec_polys.empty()) {
+	// (but a picture checked against the CPU's, or Low's smoothing done by the CPU, which reads the
+	// 3D's pixels, as before; the host's GPU does it after: set_gpu_edge). A failure there: the
+	// usual way from now on.
+	if (m_g3_target && m_parts && !check && !m_rec_bad && (!m_edge_aa || m_gpu_edge) && !m_rec_polys.empty()) {
 		const int t = m_g3_next;
 		if (m_gpu3d->make_targets(bitmap.width(), bitmap.height(), G3_TARGETS) &&
 			m_gpu3d->draw_target(m_rec_polys.data(), m_rec_polys.size(), m_rec_spans.data(), m_rec_spans.size(), size_t(m_rec_rows) * 2,
@@ -2290,15 +2469,17 @@ void model1::gpu3d_end(bitmap_rgb32 &bitmap)
 				if (diff && gpu_diff_ok(dd, (long long)n)) {   // (rounding: the GPU's kept)
 					fprintf(stderr, "the 3D on the GPU: %zu of %d x %d pixels differ by rounding (%lld drawn on one only, %lld by more than %d, colours by %d at most): keeping the GPU\n",
 							diff, bitmap.width(), bitmap.height(), dd.cover, dd.big, GPU_ROUNDING_COLOUR, dd.most);
-					if (--m_gpu3d_verify == 0) fprintf(stderr, "the 3D on the GPU: the game's pictures checked against the CPU's\n");
+					if (--m_gpu3d_verify == 0) { fprintf(stderr, "the 3D on the GPU: the game's pictures checked against the CPU's\n"); cpu_3d_let_go(); }
 				} else if (diff) {   // (not the CPU's: the CPU's picture shown, and the CPU's from now on)
 					memcpy(bitmap.data(), m_check_cpu.data(), n * 4);
 					m_g3.failed++;
 					m_gpu3d_verify = 0;
 					fprintf(stderr, "the 3D on the GPU: its picture isn't the CPU's (%zu pixels differ, %lld drawn on one only, %lld by more than %d): the CPU's 3D from now on\n",
 							diff, dd.cover, dd.big, GPU_ROUNDING_COLOUR);
-				} else if (--m_gpu3d_verify == 0)
+				} else if (--m_gpu3d_verify == 0) {
 					fprintf(stderr, "the 3D on the GPU: the game's pictures checked against the CPU's, pixel for pixel\n");
+					cpu_3d_let_go();
+				}
 			}
 		}
 	}
@@ -2310,6 +2491,21 @@ void model1::gpu3d_end(bitmap_rgb32 &bitmap)
 	m_rec_quads.clear();   // (the points' copies stay allocated)
 }
 
+void model1::recheck_gpu3d()
+{
+	m_gpu3d_verify = getenv("M1_G3_NO_VERIFY") ? 0 : 3;
+}
+
+// The GPU's pictures checked: release the CPU's drawing buffers until a fallback needs them.
+void model1::cpu_3d_let_go()
+{
+	if (m_gpu3d_check > 0) return;
+	const size_t bytes = m_check_cpu.bytes() + s_owner.capacity() * sizeof(int32_t);
+	m_check_cpu = bitmap_rgb32();
+	std::vector<int32_t>().swap(s_owner);
+	fprintf(stderr, "the 3D on the GPU: the CPU's drawing buffers let go (%.1f MB; made again if it draws)\n", bytes / 1e6);
+}
+
 // Auto's measure (the host's Display > 3D renderer: Auto): a made-up picture the size of a fight's
 // (a floor of large polygons, the backdrop's, two fighters' worth of small ones, their shadows)
 // drawn unseen at the render scale by the CPU and by the GPU, `reps` times each; the median times
@@ -2318,8 +2514,8 @@ bool model1::bench3d(int reps, double &cpu_ms, double &gpu_ms, long long *differ
 {
 	if (!m_gpu3d) return false;
 	const int W = m_bitmap.width(), H = m_bitmap.height();
-	static bitmap_rgb32 scratch;
-	if (scratch.width() != W || scratch.height() != H) scratch.allocate(W, H);
+	bitmap_rgb32 scratch;   // (not kept: once at the start, the GPU's then or the CPU's into the frame)
+	scratch.allocate(W, H);
 	std::vector<point_t> pts;
 	std::vector<quad_t> qs;
 	uint32_t seed = 0x1234567;

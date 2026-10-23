@@ -3,6 +3,13 @@
 This is a write-up of how the port was built and checked, for anyone who wants to know what "recomp" means here, how
 much of it comes from MAME, and how AI coding tools were used. The commit history has the detail; this is the overview.
 
+## Pull request checks
+
+The **Tests** GitHub Actions workflow runs all nine ROM-free test targets on macOS when a pull request
+is opened, updated with new commits, or reopened. It can also be run manually from the Actions tab.
+New updates cancel an older run for the same pull request. ROM-backed checks remain local: CI does
+not download game ROMs or require secrets.
+
 ## The approach
 
 Virtua Fighter (1993) runs on Sega's Model 1 board. Its game logic is a program for the main CPU, an NEC V60. Around
@@ -10,7 +17,7 @@ that CPU the board has a Fujitsu MB86233 geometry DSP (the TGP), a polygon raste
 2D layers, an I/O board, and a sound board (a 68000, two MultiPCMs and a YM3438).
 
 **The V60 program is statically recompiled.** The port never ships any of the game's code. It ships an address map,
-`assets/vf_map.txt`: where the program's functions start and where its indirect jumps and calls lead, addresses only.
+`assets/games/vf/vf_map.txt`: where the program's functions start and where its indirect jumps and calls lead, addresses only.
 When the game starts, it reads the V60 program from the player's own `vf.zip`, walks the code from those addresses and
 turns it into ARM64 or x86-64 code with SLJIT (`src/rt/analyse.cpp`, `src/rt/native.cpp`). That takes about 30 ms.
 The map was made from coverage runs (scripted fights, attract mode, the ending), and if anything goes wrong the game
@@ -21,13 +28,39 @@ There are two forms of the recompiled code:
 - **At start-up (the release build, `make native`).** Control flow is native code. The instructions the game spends
   most of its time on (byte moves, bit tests, branches, and the run loop's cycle and interrupt check, together about
   80% of what runs) are emitted as machine instructions. Every other instruction calls MAME's handler for it.
-- **Ahead of time, to C++ (`make rec`, for development).** `tools/recomp/v60recomp` and `emit.py` write one C++
+- **Ahead of time, to C++ (`make rec` or `make <game>-lockstep`, for development).** `tools/recomp/v60recomp` and `emit.py` write one C++
   function per V60 function. Each instruction's operands are decoded at build time and MAME's handler body is pasted in
   with them, so about 99.5% of the instructions (25,823 of about 25,960) become straight-line C++; the rest (bit-string
   instructions and a few addressing modes) still go through MAME's handler. This build needs the ROM, so it stays on the
   developer's machine.
 
 Both keep the interpreter's exact cycle counting and interrupt timing, so the rest of the board sees the same CPU.
+
+**Virtua Racing's static-recompile pipeline is experimental.** It is the same pipeline as VF's (every game's
+targets come from one Makefile template; its coverage runs are listed in `src/games/vr/game.mk`). `make vr-static` first runs a scripted VR
+coverage session against the interpreter, analyzing attract mode and a driving sequence with wheel sweeps,
+acceleration, braking, and gear changes. It builds `vrrun-static` (`model1run` with the generated C++ under `build/`
+linked in); run it with `M1_REC=1` to use the generated table. `make vr-lockstep` compares the interpreter and generated-code runner and
+fails on the first interpreter fallback, reporting its address and frame. Missing entries are written to
+`build/cov/vr/runtime_entries.txt` and included in the next generated map. Lockstep also compares CPU registers,
+battery-backed and work RAM, and rendered frames. `vr-lockstep` runs both the default Beginner script and an
+alternate Expert-course script, checking the course label as well as the track-select, starting-grid, active-race,
+and course-results transitions. Coverage also includes a Medium-course script, all four view buttons, test-menu
+entry/exit, and the Beginner second-credit race followed by attract rankings. The checkpoints use the state
+byte at `0x501138`, dispatched by the ROM at `FE1C7D`: results/game over is state `0x1c`, not attract rankings
+(`0x03`). Neither course-dependent cameras, the unrelated changing mode byte, nor a render-dependent
+polygon-count range identifies results reliably.
+`assets/games/vr/vr_map.txt` contains the address-only map used by the desktop host. Both `make vr` and
+`make vr-native` now build startup-native execution, and release packages use `vr-native`. `--interp` retains
+the interpreter option. `make vr-native-lockstep` verifies native execution against the interpreter on the
+scripted scenarios (with `model1lock --native`, which has no generated C++ in it). This is still scripted
+coverage, not broad release validation. The `qualifying` scenario covers an EASY Beginner five-lap finish
+and ranking-name entry: it selects the difficulty through the test menu, drives with wheel/pedal/shift
+inputs, confirms `SDK`, and verifies the first-place ranking's name and finishing time in battery RAM
+before returning to attract rankings. It never patches the ROM or injects a finishing race state.
+The shared script API lets this driver read the reference machine; lockstep applies the resulting controls
+identically to the interpreter and native machine. A focused ROM-backed test also checks the saved entry
+after reset and reboot. Medium/Expert qualifying finishes and default-difficulty finishes are not covered.
 
 **The rest of the board is MAME's code.** The TGP runs its own program on MAME's MB86233 core. The rasterizer, tile
 chip, sound chips (MultiPCM, the 68000 via Musashi, the YM3438 via ymfm) and the I/O board's Z80 and EEPROM follow
@@ -42,15 +75,111 @@ menu (RmlUi), saves, the first-launch file picker, and the parts that go beyond 
 - **Smooth motion.** VF's logic runs at 30 Hz. Above 1x, each picture is drawn for a moment between the last two game
   frames: every object's matrix is blended with its match in the frame before, paired like a diff of the two display
   lists. Camera cuts and objects that can't be paired aren't blended. The game itself runs untouched; the picture is a
-  game frame behind.
+  game frame behind. VR draws at 30 Hz too, but its wheels change model as they turn and its trackside reuses
+  models along the track, so guessing pairs by model and place put tyres between cars. Instead the game's own memory
+  says what each part is (`draw_records`): as the CPU writes a matrix into the display list, the register holding the
+  record of the thing drawn (a car) and the camera in RAM are read. So a car's parts pair with its own parts, the
+  track is where the older camera saw it, and a wheel that changed model moves with its car. The SEGA logo is drawn
+  the way the track is but without the camera, so a "world" part that stays in its place on screen while the camera
+  moves is blended on screen instead. Each car part then follows a
+  curve that keeps its speed from one game frame to the next, since the game's own steps are uneven. The camera turns
+  unevenly too: in a bend about 0.5 degrees a game frame, then 0.06, so the road's lines jerked sideways. Its turn is
+  smoothed with an alpha-beta filter, held within a degree of the game's, and the whole 3D picture is turned about the
+  eye to match, so cars and track stay together. A camera turn over 25 degrees or a jump over 8 units is a cut.
+  Some views sway the camera about 3 degrees back and forth each game frame while keeping the car still on screen
+  (the attract drive past the bridge, the in-car view); smoothing that sway moved the car instead. When the camera
+  swings back by more than a degree, it follows the game's own turn for 8 game frames, then the filter goes on from
+  the camera's speed at that point rather than the swing's (from the swing's, as the camera slowed the smoothed turn
+  ran up to a degree ahead and every car slid across the screen). Within a game frame the picture turns evenly from
+  one smoothed turn to the next: a curve through them at the filter's turn speeds sped up and slowed, now ahead, now
+  back, 15 times a second. A car the camera follows moves as unevenly in the world as the camera turns (after the
+  bridge every car does), so with the turn smoothed it went now ahead, now back on screen; each car whose direction
+  from the eye goes at least as evenly as the game drew it as turned with the smoothed camera is left as drawn (eased
+  in and out over a few game frames) while the rest of the picture is turned.
+  VR's sky scroll alternates between the current position and the average of two game frames.
+  The port keeps the half-pixels that average drops and calculates the next horizontal scroll from the game's RAM,
+  so the sky moves between those positions at render resolution instead of extrapolating whole-pixel steps.
+  At 1x and 4:3 the tile layer is unchanged. Running VR's logic at 60 Hz instead isn't possible: it waits for two
+  vblanks a frame by design, and its timing (the attract mode, the race clock) counts game frames.
 - **Widescreen.** In fights the 3D view opens out to the sides and the stage sky is drawn from its whole panorama. The
   title and player select get painted side columns, drawn for this port.
 - **Antialiasing** (an edge filter, or 2x/3x supersampling), scanline and CRT filters, and hi-res stage skies built
   from the game's own panoramas.
 - **Pacing and a load governor.** The game runs on its own clock, trimmed to keep the sound queued. If a machine can't
   keep up, the governor turns off antialiasing and then lowers the render scale.
+  Returning to the foreground or a wall-clock gap over half a second resets the game clock, pacing averages,
+  and queued audio, so waking from sleep does not fast-forward through missed time.
+  `M1_HIDDEN=1 M1_QUIT_AFTER=240 M1_EVENTS_AT=80:sleep,160:sleep M1_TRACE=/tmp/resume.log build/bin/vr`
+  exercises two simulated one-minute gaps without displaying a window.
 - **Scene sync.** VF builds a new scene over several frames. The host holds the last complete picture until the new
   3D has settled, so scene changes don't show half-built frames.
+
+**Title-specific code is separated from the shared board.** `src/games/game.h` defines what a game gives the shared
+code (its profile, I/O profile, video traits, TGP HLE, gameplay hooks and scripted play), and each game's folder
+registers its own at start-up (`src/games/<name>/game.cpp`); the shared code looks a game up by its short name and
+names none, so a new game is a new folder. The build works the same way: each game's `src/games/<name>/game.mk`
+gives its name and settings (whether its desktop build links the generated C++, its coverage and lockstep scenarios),
+and one Makefile template makes the same targets for every game: `<name>` and `<name>-native` (the desktop and
+release builds), `<name>-regions`, `<name>-coverage` (the recompile's hints in `build/cov/<name>/`), `<name>-static`,
+`<name>-lockstep` and `<name>-native-lockstep`. VF's ROM-set loader, TGP HLE driver, and recompiler map live under `src/games/vf/` and `assets/games/vf/`.
+The TGP command table, VF collision bounds, and list-handling state are owned by that driver; common TGP operations
+remain in the shared machine. VF's gameplay patches, character/random-fighter state, secret-icon rendering, and
+per-frame hooks now live in `src/games/vf/gameplay.cpp`; the shared frame loop and backdrop hashing use generic
+callbacks. Host and tool code now reaches VF-only operations through the `game::vf::gameplay` interface rather than
+through the shared machine API. That module is no longer part of the machine class (no friends, no VF members): it
+works through the machine's public interface for games (the program ROM it patches, RAM, tiles, characters, colours
+and its own `game_state()`), as does VF's TGP HLE table through the public TGP operations, FIFOs and matrix. The shared machine retains the real/stand-in I/O board, raw input registers and EEPROM
+storage; the VF-specific EEPROM layout, coin settings and GAME ASSIGNMENTS schema live in the VF gameplay module.
+The fight-camera test and title/select backdrop fingerprints for widescreen handling are also owned by the VF module;
+the shared renderer consumes its screen-name and scene-width callbacks while retaining the generic drawing and scaling.
+What the shared video code needs to know about a game's own data comes from `game::video_traits`
+(`src/games/*/video.cpp`): whether to blend the 3D between game frames, which polygons are scenery for the shadow fix,
+the stage skies' ROM records and the camera RAM their smooth scroll reads, and texture blocks the game leaves unset.
+VF fills them in; VR leaves them empty, so the machine holds no game's addresses.
+Virtua Racing has its own I/O profile: digital labels and bit positions, analog channel names, neutral values, and
+default host-axis mappings. The shared I/O board models the ADC channels and secondary analog bank; analog values can
+be supplied to the headless VR runner with `VR_WHEEL`, `VR_ACCEL`, and `VR_BRAKE` when the optional Model 1 I/O-board
+ROM is available. The SDL host now builds as separate `vf` and `vr` executables; the VR binary loads the VR region
+directory, has its own settings/save directory, and exposes VR-profiled shift, steering, and pedal controls without
+showing VF's arcade settings or cheats. VR's TGP track, collision, and vehicle-operation handlers are in
+`src/games/vr/tgp.cpp` (`game::vr::tgp_track_hle`, which owns their state), while the shared machine keeps common TGP
+operations and dispatch. VR runs its real TGP program, so they wait for a VR HLE table; VF's table, which never sends
+them, leaves them out. Both hosts read the player's
+MAME set at launch through one Model 1 loader (`src/machine/model1_romset.cpp`: the zip reader, the CRC checks, the
+CPU and I/O boards' ROMs), each game giving only its own ROM table (`src/games/*/romset.cpp`). The development
+regions are built the same way: `tools/romset.py` has the board's ROMs and each game's table is
+`tools/games/*/romset.py` (picked by `--game` or the zip's name), and `make test-romset` checks the two loaders agree.
+The desktop host (`src/host/main.cpp`) is shared by both games and has no game checks: each executable links one
+game's `game_host` (`src/host/game_host.h`, implemented in `src/games/*/host.cpp`), which gives the ROM set, the
+control profile (`src/games/*/controls.h`: action labels, key and pad defaults, start bits, analog keys; the shared
+`src/host/controls.h` has only the directions, Start, Coin, Menu and nine button slots, which each game names, VF's
+Guard to All three and VR's pedals, with their own `settings.ini` names), the game's
+own settings, its menu pages, and boot, menu-close and per-frame hooks. VF's arcade settings, cheats, title/select
+screens (`src/games/vf/art.h`) and secret icon live in VF's host; VR's host gives only its ROM set and controls.
+The few work RAM addresses the shared code reads (the camera pointer that marks the end of the boot, and the game's
+mode byte and its test-menu value) are in each game's `game::profile`, and the host's trace asks the game for its own
+columns. The headless tools (`model1run`, `model1cov`, `model1lock`, `model1script`) are one binary each for every
+game: `--game vf|vr` picks it (or the regions folder's name, `build/vr`; with neither, they ask), the game's scripted play, lockstep checks
+and script bots (`mash`, `brawl`, `fight`) come from `src/games/*/script.cpp` (`src/games/script.h`), and the tools'
+own extras for a game (VF's widescreen pictures, cheats, panoramas, select icon) from `tools/games/*/tool.cpp`
+(`tools/tool_game.h`, registered the same way). The test and tuning variables are `M1_*` for every game. Each desktop executable still links one
+game's host and, for a static build, one game's recompiled table; the generic tools link none, and each game has
+`<name>run-static`, `<name>lock-static` and `<name>script-static` with its own. The entries the recompiled code falls
+back to the interpreter for are noted in `build/cov/<name>/runtime_entries.txt` and go into that game's next recompile.
+The downloads are made the same way for every game and every platform too: `tools/mac/package.sh`,
+`tools/win/package.sh` and `tools/linux/package.sh` (which runs `tools/linux/container.sh` in Valve's Steam Runtime)
+take the games to package (all by default), build SDL3 and FreeType from the checked sources `tools/release/deps.sh`
+fetches, and write `build/<os>/<game>/<File>Recomp-<os>`; each reads a game's settings from
+`tools/games/<name>/release/game.sh` (its title, file names, which build ships, icons, READMEs, and the Linux
+launcher kept next to it); each package gets the shared `assets/ui` and `assets/fonts` and only that game's
+`assets/games/<name>`. The Linux package (`<File>Recomp-linux.tar.gz`, `-deck` until v1.3.2) is one x86-64 build
+made in Valve's Steam Runtime, so it runs on SteamOS on the Deck as well as on other current distributions. Whatever is only one game's sits under its own folders, even outside the program: VF's
+select-icon renders (`tools/games/vf/select_icons`, into `assets/games/vf/select_icons`), its hi-res skies and
+widescreen sides (`assets/games/vf/backgrounds`; the host only looks for skies, and only shows the Background filter,
+when the game's `video_traits` lists some). Each game's `romset.cpp`
+registers its set with the shared loader too, so `tests/romset_test` finds a game's set by name. The shared video code says "scenery" and "a moving model's shadow" for what VF calls stages
+and fighters (`video_traits::scenery_polys_end` sets where a game's scenery polygons end), and the build flags are
+`M1_NATIVE` and `M1_GPU3D_METAL` / `M1_GPU3D_SDL`.
 
 **The GPU renderer.** Since v1.1.11 the 3D can also be drawn on the GPU (Display > 3D renderer): Metal on a Mac,
 SDL_GPU compute on Windows (Direct3D 12 or Vulkan) and Linux / Steam Deck (Vulkan). The goal was the CPU renderer's
@@ -72,14 +201,14 @@ picture exactly, not an approximation of it:
 
 Nothing was taken as working until it was measured. These checks run on every change that touches the game:
 
-- **Lockstep against the interpreter.** `tools/vflock.cpp` runs two machines side by side, one on MAME's V60
+- **Lockstep against the interpreter.** `tools/model1lock.cpp` runs two machines side by side, one on MAME's V60
   interpreter and one on the recompiled code. It compares every CPU register after every scanline and the RAM after
   every frame. Standard runs are 18,000 frames (five minutes of scripted fights), for both the start-up and the C++
   forms. The first difference stops the run and says where.
 - **Frame and RAM comparison with MAME.** Reference pictures are taken from MAME offscreen. The port's headless runner
-  (`tools/vfrun.cpp`) renders the same frames: attract mode matches MAME pixel for pixel, with both the interpreter and
+  (`tools/model1run.cpp`) renders the same frames: attract mode matches MAME pixel for pixel, with both the interpreter and
   the recompiled code. These checks need the ROMs, so the script that makes the MAME references isn't in this repo.
-- **Scripted, headless runs.** `tools/vfscript.cpp` plays input scripts with no window: the operator menus, scripted
+- **Scripted, headless runs.** `tools/model1script.cpp` plays input scripts with no window: the operator menus, scripted
   fighters (random presses, or real moves and combos), a full ladder to the ending and name entry. It records clips
   with their sound, logs each frame's inputs, and dumps or pokes RAM to find the game's variables. Bugs were reproduced
   as scripts before they were fixed.
@@ -91,7 +220,7 @@ Nothing was taken as working until it was measured. These checks run on every ch
   and red, so the port departs from MAME there on purpose. The commit says why, and the MAME check is expected to differ
   on those frames.
 
-A typical commit message ends with the check results, such as "vflock 18000 identical both modes; MAME 120/120 both;
+A typical commit message ends with the check results, such as "model1lock 18000 identical both modes; MAME 120/120 both;
 GPU check 0 differ at every scale/shape".
 
 ## Working with AI
@@ -104,10 +233,10 @@ this:
   of the real cabinet, and reviewing what went out. Many fixes started as "this looks wrong at 4x" or "the bushes
   jump", and the AI's job was to find out why and prove it.
 - **Agents in parallel, all headless.** Several agents worked at once on separate problems. Each had its own build
-  and data folder and ran the game hidden (`VF_HIDDEN=1`, no window, no Dock icon) through the headless tools. They
+  and data folder and ran the game hidden (`M1_HIDDEN=1`, no window, no Dock icon) through the headless tools. They
   never opened a visible window on the machine the person was working on.
 - **Measure, don't assume.** Claims had to come with a measurement: a lockstep run, a pixel diff, a frame trace
-  (`VF_TRACE`), a timing. Several plausible fixes were reverted when the numbers didn't support them.
+  (`M1_TRACE`), a timing. Several plausible fixes were reverted when the numbers didn't support them.
 - **Memory in the repo.** AI sessions don't remember each other, so the knowledge lives in writing. Commit messages say
   what changed, why, and how it was checked. A private notes file holds findings, dead ends and open questions. A new
   session reads those first instead of rediscovering them.
@@ -144,20 +273,287 @@ The AI wrote nearly all the code. A person decided what was right.
   float-to-integer conversion each differ from the CPU's → integer division, no fusing, x86's conversion, and a
   self-test at every start (see above).
 - **Players' setups** → portable mode (a `portable.txt` beside the program keeps everything in its folder) and a ROM
-  folder of the player's own (`--roms`, `VF_ROMS` or `roms_folder` in `settings.ini`), only read, so an update can't
+  folder of the player's own (`--roms`, `M1_ROMS` or `roms_folder` in `settings.ini`), only read, so an update can't
   touch it.
 - **A crash at exit on Linux** → a widescreen write ran past the end of each line in the tile chip → found with ASan
   and fixed. ASan now runs clean at several scales and shapes.
 
+## Reintegrating upstream after v1.3.2
+
+The upstream production changes through `a48890d` (the v1.4.0 randomizer and subsequent menu, replay and GPU fixes) are
+adapted to the multi-game runtime rather than restoring the original VF-only machine. VF's gameplay state owns
+the random and secret fighters, deterministic name seeds, ROM patches for moves, strands and voices, ranking
+names, and the Kage mask and language options. Its video customization is supplied through game callbacks;
+the shared board does not need to identify a VF character or know its record addresses.
+
+The host keeps the common menu interaction, frame pacing, graphics-driver selection, GPU composition and
+renderer rechecks. VF's own host supplies its fighter settings and ranking-name sidecar. VR retains its existing
+record-based interpolation and sky-scroll handling.
+
+`make test-vf-gameplay` checks the settings, mask unlock, code patch restoration, reset state and ranking-name
+round trip without a ROM. The same test binary accepts a local VF regions directory to check the named seed
+catalog, seeded fighter reproducibility, randomized gameplay and ROM restoration; `--native` runs that gameplay
+through startup-recompiled code. The existing per-game lockstep tools remain the CPU and RAM cross-check.
+The solo random-opponent check also found an indirect dispatch destination missing from VF's address map;
+that observed edge is included so the check runs without interpreter fallback.
+
+The shared camera-cut extrapolation follows upstream's updated curve. It intentionally changes two sampled
+VR smooth-motion pictures around a cut; record-based matching and the unblended 1x pictures are unchanged.
+The disabled upstream `VF_POSE_EASE` / `VF_JOINTLOG` diagnostic experiments are not carried over; normal stance
+blending remains the game's own.
+
+Reintegration checks passed: VF's 18,000-frame native lockstep and both 22,000-frame VR course scenarios,
+the shared and per-game tests, and the randomized VF test on both the interpreter and native code (337
+named fighters, with no native fallback). The randomized interpreter run also passed AddressSanitizer.
+At 1x, 150 VF and 100 VR sampled frames matched the pre-integration runner byte for byte. Isolated desktop
+runs checked Metal rendering, GPU 2D composition and menu/restart behavior without changing the player's saves.
+The SDL-GPU edge shaders still need Windows/Linux runtime validation; this Mac exercises their CPU fallback.
+
+## VR's extended scenery distance
+
+VR does its distance culling in the V60 program, before submitting objects to the shared renderer. Its routine
+at `FF7C1E` selects visible cells from a 5x5 neighborhood of the camera in a 16x16 course grid, each cell 128 units
+wide. At `FF7DC5` it finishes the scenery list at `501CC0`; the camera's cell and visibility mask are still in
+R21 and R22. The game's separate near-cell lists support collision and streaming and must not be enlarged.
+
+An earlier maximum-distance implementation expanded the CPU's list through an in-memory ROM patch,
+set all scenery visibility bits, and raised the global polygon budget. That increased emulated CPU
+work and could also change dynamic-object submissions. After an attract-mode car-position discrepancy
+was reported, this coupling was removed rather than compensating with simulation timing changes.
+
+VR still observes the completed-list write, but only remembers which cells the arcade selected.
+At the first static-scenery matrix write (`FF8500`, called from `FF8469`, return address `FF846F`),
+it reads additional static object records from the course table at `501948`. Those objects are attached
+to the matrix's display-list offset as host-only metadata, without inserting CPU commands or writing
+ROM, RAM, visibility bits or the polygon budget. All 256 cells are considered, nearest first, without
+distance or directional culling. A selected cell is not necessarily submitted: `FF84A2` skips it when
+the cumulative polygon cost at `5011A0` exceeds the budget at `5011B0`. The host follows that same
+per-cell budget check, including each object's cost in the third record word, and supplements skipped
+selected cells too. Otherwise nearby buildings disappear when they enter the arcade's selection,
+then pop back in when the budget permits them.
+
+The shared renderer draws these objects with that matrix and its material/light state. Interpolated
+frames snapshot the extra objects with their matrix slot, so they use the same camera interpolation
+as the world. Additional geometry has its own depth-sort accumulator, leaving the original objects'
+inherited sort depths unchanged. Static scenery bypasses the arcade budget and command-buffer limit,
+but does not change which cars the CPU submits. Renderer geometry allocations have explicit bounds
+checks to prevent full-course geometry from overflowing the finite point/quad buffers.
+
+The desktop's Display > Draw distance choice defaults to Full, saves the choice in VR's settings, and applies it to
+the next list without restarting. Updated regression assertions cover all 256 camera cells,
+nearest-first additional objects, unchanged ROM/RAM and Arcade budgets, and CPU/register equality
+between distance modes during real-ROM runs. The ROM-free test checks budgets that stop after the
+first cell, exactly at a cell boundary, and beyond the whole selected list. With local ROMs,
+`build/bin/model1_video_test build/vr --scenery-distance` checks the Acropolis grid and race start
+with smooth motion on and off: every course-table object must be submitted exactly once, including
+objects from cells skipped by the arcade's budget. This is an automated coverage check, not visual
+verification.
+
+Animated trackside props have separate visibility checks. Full distance overrides reads of
+`501AA0..501ABC` at the render-only checks `FFD77A`, `FFD928`, `FFDABA` and `FFC1B2` (flags).
+Windmills (`FFB769`), animated start/goal banners (`FFB0EB`), roadside light poles (`FFAAC4`)
+the building beside the windmill (`FFB679`) and palm trees (`FFDC4D`) instead use `501AC0..501ADC`.
+These routines also check collisions: their newly admitted, originally invisible instances
+receive a far result only for those collision queries (`FFB797`, `FFB19D`, `FFB1BD`, `FFAAED`,
+`FFB6A7`, `FFDC94`), so extending
+their drawing does not enable distant collisions. Originally visible instances keep their real
+results. Scene-enable checks, stored masks, stored budgets and object command sizes are unchanged.
+Only these props' drawing calls bypass the submission-budget comparison, even with LOD On.
+Each part's matrix is attributed to its R25 record rather than a stale car record for smooth motion.
+
+`build/bin/model1_video_test build/vr --attract-scenery` runs 6,000 attract frames per configuration
+on the interpreter and native backend, covering both distance settings and smooth/detail modes.
+The original three-part check at `FFD928` covers the large wheel, not the windmills; checking its
+submissions alone missed the windmill and banner culling. The expanded regression checks actual
+pixels from windmills, banners, flags, light poles, palms and the windmill's neighboring building beyond
+their original visibility masks, including 84
+rear-facing distant-banner samples with smooth motion. It also compares all 16 cars' positions,
+speed, progress and collision state at 2,859 matched simulation updates; partial CPU updates at
+video-frame boundaries are deliberately not compared. Full draws both windmill parts on all
+990 calls, including 821 outside the original mask. Light poles remain submitted on all 12,608
+calls (11,164 outside the mask), and the neighboring building on all 990 calls (821 outside).
+The smooth checks detect visible distant poles in 62 pixel samples and the building in nine.
+Palms remain submitted on all 20,790 calls (18,415 outside their original mask), with visible
+distant palms in 122 smooth pixel samples and 121 with smooth motion off. Their collision
+query retains its real result inside the original mask; outside it the non-hit result prevents
+new impacts, crash sounds and detached fronds. All five palm drawing calls bypass the submission
+budget in Full mode, including the existing impact-animation parts. Arcade mode is unchanged.
+The fixed arrow boards at Big Forest's pit exit have their own render-only wide-mask check
+at `FFD0E2`. Full bypasses that check and the drawing budget at caller `FFD19C`, with R25
+matrix ownership. This handler has no collision queries. `build/bin/model1_video_test build/vr --direction-signs` checks
+6,000 frames including a Beginner race on both backends, with smoothing and LOD alternated.
+It verifies all 5,328 board calls (4,248 outside the original mask), visible distant boards in
+249 active-race pixel samples, and unchanged simulation across 2,699 matched updates.
+Breakable boards keep their original gate at `FFCC8C`: it freezes impact detection, motion,
+breakage and sound together outside the arcade mask. Full adds their missing meshes to the
+host-only scenery supplement, using each board's saved translation, three rotations and
+animation offsets without executing any extra board logic. Supplemental objects carry an
+optional local transform and owner; the renderer composes it with the current camera, and
+retained-list hashes include the saved pose. Originally visible boards retain their arcade
+drawing path, with R25 ownership at caller `FFCEC9`. The direction-sign regression also
+compares every breakable board's state bytes at matched simulation boundaries in races and
+attract mode, and checks actual distant-board pixels across both backends and motion modes.
+Static coverage is checked against
+the course table captured when its list was written, not the next scene's table during camera cuts.
+The smooth Full runs retain every static course object across all 2,186 scenery lists.
+
+The initial 7x7 implementation was validated with the gameplay regression, which checks boundaries and masks,
+then compares actual rendered polygon counts at matching cameras using local ROMs on the interpreter and native
+runner. In the 6,000-frame Beginner run, 2,361 matching-camera frames draw more geometry, with up to 1,589 extra
+quads; the ranking's camera can now see the distant suspension bridge that the arcade culls.
+The same test passes AddressSanitizer; Arcade's comparison picture matches the pre-change runner byte for byte.
+Native lockstep still passes VF's 18,000 frames and both 22,000-frame VR course scenarios with Extended enabled.
+The native desktop menu was also checked through both choices and a saved Arcade choice across a relaunch.
+
+## VR's model detail (LOD)
+
+Display > LOD defaults to Off and persists as `lod = off` in settings. Off keeps the near-detail
+car bodies and separate wheels at every distance; On restores the arcade's distance-based
+models. Static scenery already has a single detail level in its course-cell records, so it
+remains full detail in both modes. Draw distance independently controls scenery visibility.
+
+The TGP still executes its original program. Only the completed distance results read at
+`FEFBF5` and `FF0D3B`, the two car-rendering detail decisions, are treated as near when LOD is off.
+Collision, proximity and other TGP results remain unchanged. The normal model and damage
+selection code still runs, retaining car colours, animation and crash geometry.
+
+Full detail also bypasses the submission-budget comparisons at `FF848A` and `FF84A2` through
+a read override; the stored budget and the per-object command sizes are unchanged. Otherwise,
+more detailed cars could consume the arcade budget before scenery or other cars are submitted.
+The renderer-only full-course supplement follows the same budget policy to avoid duplicates.
+Changes apply to newly built lists without a restart.
+
+`make test-vr-gameplay` covers defaults, toggling, reset retention, scoped distance/budget reads,
+and scenery coverage under both budget policies. With local ROMs,
+`build/bin/vr_gameplay_test build/vr --lod` (or `--lod-native`) compares rendered detail while
+checking car positions, speed, track progress and collision state against arcade LOD on every
+frame, then verifies that switching LOD back on restores matching polygon counts.
+
+## VR's crash livery
+
+Standalone car-colour selection replaces the player's normal model pointers, but the arcade's
+collision and recovery routines also select red-only models directly (`FD377A` and `FD4A39`).
+Applying the normal pointers at frame end cannot stop those models appearing in a list already
+written that frame.
+
+Object effects now receive the matrix's recorded owner, including when smooth motion is disabled.
+For the standalone player only, VR remaps the red paint materials (`02`, `EE`, `F6`) on those
+models to the selected livery's B0 body paint (texture slot 1). Geometry, damage animation,
+non-paint materials and lighting flags are unchanged. Opponents, linked-cabinet mode, attract
+scenes and the default red livery are excluded.
+
+`make test-model1-video` checks every texture-word value against all seven non-default paint
+selections. With local ROMs, `build/bin/model1_video_test build/vr --crash-livery` injects the
+three arcade impact states and checks actual rendered material callbacks with the interpreter
+and native recompiler, with smooth motion both off and on. It verifies green paint, unchanged
+detail materials and opponent appearances, and that all three original impact models still draw.
+
+## VR's foreground SEGA logo
+
+The spinning blue SEGA logo is screen-space 3D, not scenery. Sorting it into the world's polygons
+let close-up cars paint over it during attract mode, with either draw-distance setting and with or
+without smooth motion. A car crossing the eye could even retain a negative sort key after clipping.
+Correcting only negative keys was insufficient: a close car's positive key could also precede the logo.
+
+VR now identifies its logo model in `video_traits::foreground_objects`. The shared sorter draws those
+objects after world geometry, keeping their own depth order and preserving the foreground flag through
+clipping. World depth keys, car/scenery ordering and other games are unchanged; CPU and GPU rasterizers
+consume the same sorted sequence.
+
+`make test-model1-video` checks foreground ordering and flag preservation through clipping without ROMs.
+With local regions, `build/bin/model1_video_test build/vr` checks the affected close-up attract views
+with both distance settings and both motion modes, plus enlarged and widescreen rendering. It compares
+the full picture with an isolated logo, requires every visible logo pixel to survive, reproduces missing
+pixels when the foreground rule is disabled, and checks that pixels outside the logo are unchanged.
+The six ROM-backed cases cover 552 views. A hidden native-host run at 2x widescreen also drew 4,187
+Metal pictures, checked 140 against the CPU with zero differences, and reported no GPU errors or fallbacks.
+
+Specular highlights are rejected when the polygon normal faces away from the light. Without that
+check, the reflection formula produces a second highlight on the spinning logo's reverse side,
+briefly washing out its dark shade. `build/bin/model1_video_test build/vr --logo-shading` checks
+reverse-facing logo pixels in original-frame and interpolated pictures; the unit tests also check
+that front-facing highlights remain enabled.
+
+## VR's animated palm ownership
+
+Animated palms use the same matrix-writing instruction at `FF8500` as cars, but their own object
+record is in R25. R19 still points to the last car tested for a collision. Treating every use of
+that writer as a car part paired palm animation frames with car parts; when models or part counts
+changed, interpolation could carry a palm along with the car instead of keeping its own motion.
+
+Matrix-writer metadata can now qualify a writer by its return address at SP. VR lists the five
+animated-scenery call sites using R25 before the ordinary R19 writer. Car, pit-crew and static-world
+ownership keep their existing rules. This changes only smooth rendering metadata, not game logic,
+ROM code or draw distance, and the original palm animation remains.
+
+The video regression checks all five caller overrides, the car and world fallbacks, and a changing-model
+palm beside a car gaining a part. Its old shared-car ownership reproduces a 2.5-unit midpoint error;
+separate ownership keeps the palm on its own path. With local ROMs,
+`build/bin/model1_video_test build/vr --motion` checks early-attract palm records and interpolation with both draw-distance modes, then
+compares native and interpreter ownership and 2x widescreen pictures through the affected sequence.
+Both distance modes pass 347 views and 2,109 palm-part pairings each; 142 native/interpreter
+in-between pictures match pixel for pixel, without interpreter fallback. The foreground-logo and sky
+regressions still pass.
+
+## VR's language setting
+
+VR now adds Language to the shared Game page, while Draw distance stays in Display. The choice is
+staged until the menu closes or Reset game is selected, and a pending choice is also saved at quit.
+Toggling back to the original language does not restart the game or change an existing U.S. region.
+Japanese selects the arcade's Japan
+country; English selects Export. Existing settings keep their language until the player changes it.
+
+The country is the low byte of EEPROM word 13, copied to `40DC9B` at boot. Both VF and VR use the
+SEGA header and byte-swapped CRC-16/CCITT, but VF checks words 8-63 while VR checks words 5-63.
+A shared EEPROM editor preserves this distinction and both the real I/O board's native words
+and the stand-in board's big-endian bytes. Language edits leave the other assignments and rankings
+alone. ROM-free tests cover both layouts, checksum coverage, invalid choices and U.S. preservation;
+the local-ROM language regression checks reset persistence in interpreter and native execution.
+
+## VR's CPU speed
+
+Other cars in VR sometimes jumped sideways. Car
+positions in RAM were smooth, but the game updates cars 0-7 in one loop that ran across a video-frame
+boundary; the boundary's place drifted, so a car was sometimes updated after the 3D list was built and
+drawn one step behind its neighbours. In 3,000 attract frames car 4 changed phase 117 times. Raising
+the emulated V60's speed moved the boundary through the loop (car 5 at 1.1x, cars 6-7 at 1.25-1.33x)
+until, from 1.5x, every car kept a steady phase over 6,000 frames apart from scene cuts.
+
+MAME's V60 charges 8 cycles to every instruction, "just an average"; the 16 MHz V60 is rated at about
+3.5 MIPS. The game profile now has `cpu_cycles_per_instruction`, applied to the per-line instruction
+budget so interpreted and native runs match. VR uses 4.5 (1.78x); VF keeps 8 and runs exactly as before.
+
+## The TGP's rounding
+
+VR's attract race differed from a cabinet video: at the tunnel exit the green car (car 0) drove
+beside the blue/white one, where the cabinet's blue/white car exits alone. The camera script and its
+timing matched exactly, and the result did not depend on CPU speed (8 to 18 cycles per instruction),
+EEPROM, the analog inputs, or nudging a car mid-race. Cars 1-7 follow scripted lines; only car 0,
+driven by the player's physics, was sensitive, and to float rounding.
+
+Both VR's and VF's TGP programs execute `stmh 0x360a0007` at startup, and bits 1-2 of the mode
+register are the rounding mode (3: toward zero). MAME applied the field only to `cfxd`, the
+float-to-integer conversion. `mb86233_device::run` now sets the host rounding mode from the register
+for the TGP's float ALU and restores the host's afterwards.
+
+That was not the cause of the difference, though. At race start the game does not clear several of
+car 0's fields, so each race inherits them from the race before. The one that matters is car 0's
+rank index (record offset +0x123): the boot code clears battery RAM, the first medium-course race
+runs with 0, and the next attract race sets it to 15, so every later medium-course race differs from
+the first. SEGA AGES Virtua Racing shows the later race from its first attract loop (the green car
+close behind on the bridge, past the red car in the tunnel), with either rounding; the other video
+was from MAME, which like a fresh board shows the first. The port follows SEGA AGES: VR's gameplay
+hooks set the rank index to 15 right after boot.
+
 ## Where to look
 
-- `src/rt/native.cpp`, `src/rt/analyse.cpp`: the start-up recompiler and code discovery. `assets/vf_map.txt` is its
+- `src/rt/native.cpp`, `src/rt/analyse.cpp`: the start-up recompiler and code discovery. `assets/games/vf/vf_map.txt` is its
   map.
 - `tools/recomp/` (`v60recomp`, `emit.py`): the ahead-of-time C++ recompiler (`make rec`).
-- `tools/vflock.cpp`: the lockstep checker. Start here to see what "identical" means.
+- `tools/model1lock.cpp`: the lockstep checker. Start here to see what "identical" means.
 - `src/machine/`: the Model 1 board (`model1*.cpp`): memory map, TGP glue, video, sky, sound, the I/O board.
 - `src/host/main.cpp`, `scene_sync.h`, `gpu_compose.h`: the host, pacing, governor, scene sync and GPU compositing.
 - `src/gpu/`, `src/machine/model1_gpu.cpp`: the GPU renderer (Metal, SDL_GPU and their shaders).
-- `tools/vfrun.cpp`, `tools/vfscript.cpp`: the headless runner and the scripted test harness. `tools/vfcov.cpp` makes
+- `tools/model1run.cpp`, `tools/model1script.cpp`: the headless runner and the scripted test harness. `tools/model1cov.cpp` makes
   the coverage runs the map comes from.
 - `git log`: each commit message explains what changed, why, and how it was checked.

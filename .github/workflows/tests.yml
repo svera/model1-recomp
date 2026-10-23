@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ROM-free tests
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install sdl3 freetype pkg-config
+
+      - name: Run tests
+        run: |
+          make -j3 \
+            test-host-gamepads \
+            test-mb86233 \
+            test-model1io-adc \
+            test-model1-sky \
+            test-model1-video \
+            test-vf-profile \
+            test-vf-gameplay \
+            test-vr-profile \
+            test-vr-gameplay \
+            test-vr-tgp-track
