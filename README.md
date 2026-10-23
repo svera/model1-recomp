@@ -6,8 +6,11 @@ widescreen support, and smooth motion at up to 120 FPS.</b></p>
 This project forks Mr. Finster's superb [Virtua Fighter recomp](https://github.com/mr-finster/vf1-recomp), refactoring it to support the rest of Sega's Model 1 arcade hardware games library as native desktop runtimes. The Model 1 was used by
 multiple games; this repository currently supports Virtua Racing.
 
-<p align="center">macOS · Windows · Steam Deck / Linux</p>
-
+<p align="center">
+  <a href="https://github.com/svera/model1-recomps/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/svera/model1-recomps?label=release"></a>
+  <a href="LICENSE"><img alt="Licence: MIT" src="https://img.shields.io/badge/licence-MIT-blue"></a>
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Steam%20Deck%20%2F%20Linux-informational">
+</p>
 <p align="center"><img src="assets/games/vr/icon/icon.png" alt="Virtua Racing Recomp" width="160"></p>
 
 <h2 align="center">Virtua Racing Recomp</h2>

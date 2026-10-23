@@ -110,7 +110,7 @@ struct gameplay_callbacks
 	// Extra renderer-only objects attached to a matrix as the CPU writes it.
 	std::function<std::vector<render_object>()> matrix_objects;
 	// Snapshot active records when a relevant matrix is written, before visibility advances.
-	std::function<std::vector<record_visibility>(uint32_t)> record_visibility;
+	std::function<std::vector<game::record_visibility>(uint32_t)> record_visibility;
 	std::function<void()> render_begin;
 	std::function<void()> render_end;
 	// Owner is the recorded RAM record, 1 for the static world, or 0 when unknown.
