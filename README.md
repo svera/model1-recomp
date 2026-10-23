@@ -150,7 +150,6 @@ make test-vr-profile test-vr-gameplay test-vr-tgp-track
 ## Project notes
 
 - [How it was made and validated](docs/HOW-IT-WAS-MADE.md)
-- [Virtua Racing-specific documentation](src/games/vr/README.md)
 
 ## Credits and licence
 
