@@ -13,6 +13,197 @@
 
 struct model1_video_test
 {
+	static void crash_materials()
+	{
+		model1::regions regions;
+		regions.title = game::id{ "vr" };
+		regions.maincpu.resize(0x1000000);
+		auto write = [&](uint32_t address, uint32_t value) {
+			for (int i = 0; i < 4; i++) regions.maincpu[address + i] = uint8_t(value >> (i * 8));
+		};
+		write(0xfcd395 + 4, 0x9000);
+		write(0x9000, 0x1234);
+		for (int color = 1; color < 8; color++) {
+			write(0xfcd195 + color * 32 + 16, 0x9100 + color * 16);
+			write(0x9100 + color * 16 + 4, 0x40000 + color * 2);
+		}
+		model1 m(std::move(regions));
+		assert(game::vr::enable_standalone_car_color(m));
+		m.write32(0x501320, 0x400d00);
+		m.write8(0x40dc8c, 0);
+		m.work_ram()[0x1138] = 0x14;
+		for (int color = 1; color < 8; color++) {
+			m.write8(0x40dca2, uint8_t(color));
+			const uint16_t paint = uint16_t(0x100 + color);
+			m.m_tgp_ram[color * 2 + 1] = paint;
+			const auto effect = m.m_gameplay.object(0x400d00, 0x40000, 0x1234, 0, nullptr);
+			assert(effect.material);
+			for (int material = 0; material <= 0xffff; material++) {
+				const int pen = material & 0x3ff;
+				const auto expected = pen == 2 || pen == 0xee || pen == 0xf6
+					? uint16_t((material & 0xfc00) | paint) : uint16_t(material);
+				assert(effect.material(uint16_t(material)) == expected);
+			}
+			assert(!m.m_gameplay.object(0x400f80, 0x40000, 0x1234, 0, nullptr).material);
+			assert(!m.m_gameplay.object(0x400d00, 0x40000, 0x5678, 0, nullptr).material);
+		}
+		m.write8(0x40dca2, 0);
+		assert(!m.m_gameplay.object(0x400d00, 0x40000, 0x1234, 0, nullptr).material);
+		m.write8(0x40dca2, 3);
+		m.write8(0x40dc8c, 1);
+		assert(!m.m_gameplay.object(0x400d00, 0x40000, 0x1234, 0, nullptr).material);
+		m.write8(0x40dc8c, 0);
+		m.work_ram()[0x1138] = 3;
+		assert(!m.m_gameplay.object(0x400d00, 0x40000, 0x1234, 0, nullptr).material);
+	}
+
+	static void crash_livery(const char *dir, bool smooth, bool native = false)
+	{
+		model1 m(load_regions(dir, game::id{ "vr" }));
+		assert(game::vr::enable_standalone_car_color(m));
+		if (native) {
+			rec::hints map;
+			assert(map.read("assets/games/vr/vr_map.txt"));
+			rec::attach(m.cpu(), "vr");
+			assert(rec::build_native(m.program_rom(), map));
+			m.run_cpu = [](int n) { rec::run(n); };
+		}
+		m.set_smooth(smooth);
+		m.reset();
+		for (int f = 0; f < 900; f++) m.run_frame();
+		assert(game::vr::set_coin_setting(m, game::vr::FREE_PLAY));
+		assert(game::vr::set_machine_setting(m, game::vr::machine_setting::car_color, 3));
+		m.reset();
+		const auto rom = m.program_rom();
+		const auto object_effect = m.m_gameplay.object;
+		size_t painted = 0, neutral = 0, opponents = 0;
+		std::set<uint32_t> damaged;
+		for (int i = 0; i < 3; i++) damaged.insert(m.read32(m.read32(0xfd4a39 + i * 4)));
+		std::set<uint32_t> seen;
+		m.m_gameplay.object = [&](uint32_t owner, uint32_t tex, uint32_t poly, uint32_t size, const float *data) {
+			auto effect = object_effect(owner, tex, poly, size, data);
+			if (owner >= 0x400d00 && owner <= 0x401e80 && owner != m.read32(0x501320)) {
+				assert(!effect.material && !effect.colour);
+				opponents++;
+			}
+			if (!effect.material) return effect;
+			assert(owner == m.read32(0x501320));
+			assert(!effect.hidden && !effect.point && !effect.normal && !effect.polygon);
+			if (!damaged.count(poly)) return effect;
+			seen.insert(poly);
+			const auto material = effect.material;
+			effect.material = [&, material](uint16_t before) {
+				const uint16_t after = material(before);
+				assert((before & 0xfc00) == (after & 0xfc00));
+				const uint16_t pen = before & 0x3ff;
+				if (pen == 0x02 || pen == 0xee || pen == 0xf6) {
+					const uint16_t paint = m.palette_word(0x1000 | (after & 0x3ff));
+					const int r = paint & 31, g = (paint >> 5) & 31, b = (paint >> 10) & 31;
+					assert(g > r && g > b);
+					painted++;
+				} else {
+					assert(before == after);
+					neutral++;
+				}
+				return after;
+			};
+			return effect;
+		};
+		int racing = 0;
+		for (int f = 1; f <= 6000 && racing < 240; f++) {
+			m.m_inputs[0] = uint8_t(~((f >= 3000 && f < 3006) || (f >= 3120 && f < 3126) ? 0x10 : 0));
+			assert(m.set_analog_input(0, 0x80));
+			assert(m.set_analog_input(1, 0xff));
+			m.run_frame();
+			if (smooth) m.render_smooth(double(m.frame_number()) - 0.5);
+			if (m.work_ram()[0x1138] != 0x14) continue;
+			racing++;
+			// Exercise the ROM's three impact models, not replacement host geometry.
+			if (racing == 60 || racing == 100 || racing == 140) {
+				const uint32_t player = m.read32(0x501320);
+				m.write16(player + 0x191, 1);
+				const uint32_t flags = racing == 60 ? 8 : racing == 100 ? 16 : 24;
+				m.write32(player, (m.read32(player) & ~24u) | flags);
+			}
+		}
+		printf("VR green crash livery (%s, smooth %s): %zu painted and %zu unchanged detail polygons, %zu opponent objects, %zu impact models\n",
+			native ? "native" : "interpreter", smooth ? "on" : "off", painted, neutral, opponents, seen.size());
+		assert(racing == 240 && painted > 100 && neutral > 100 && opponents > 100);
+		assert(seen == damaged && m.program_rom() == rom);
+		if (native) assert(rec::fallback_count() == 0);
+	}
+
+	static void scenery_distance(const char *dir, bool smooth, bool lod)
+	{
+		model1 m(load_regions(dir, game::id{ "vr" }));
+		m.set_smooth(smooth);
+		game::vr::set_lod(m, lod);
+		m.reset();
+		auto play = game::make_auto_play(game::id{ "vr" }, "alternate", 12345, true);
+		assert(play);
+		using object_key = std::pair<uint32_t, uint32_t>;
+		std::set<object_key> drawn;
+		int checked = 0, incomplete = 0, budget_skips = 0;
+		bool collecting = false;
+		std::set<uint8_t> phases;
+		const auto matrix_objects = m.m_gameplay.matrix_objects;
+		m.m_gameplay.matrix_objects = [&] {
+			auto extra = matrix_objects();
+			if (collecting)
+				for (const auto &object : extra)
+					assert(drawn.emplace(object.texture, object.polygon).second);
+			return extra;
+		};
+		auto trace = [&](uint32_t pc) {
+			if (pc == 0xff8450) {
+				drawn.clear();
+				collecting = true;
+			}
+			if (!collecting) return;
+			if (pc == 0xff84a2 && m.read32(0x5011a0) > m.read32(0x5011b0)) budget_skips++;
+			if (pc == 0xff8566 && m.read32(m.cpu().reg(31)) == 0xff846f)
+				assert(drawn.emplace(m.cpu().reg(4), m.cpu().reg(3)).second);
+			if (pc != 0xff8473) return;
+			collecting = false;
+			std::set<object_key> expected;
+			const uint32_t table = m.read32(0x501948);
+			for (int cell = 0; cell < 256; cell++) {
+				uint32_t record = m.read32(table + cell * 4);
+				if (!record || record == 0xffffffff) continue;
+				for (int n = 0; m.read32(record); n++, record += 12) {
+					assert(n < 4096);
+					expected.emplace(m.read32(record + 4), m.read32(record));
+				}
+			}
+			checked++;
+			phases.insert(m.work_ram()[0x1138]);
+			if (drawn != expected) {
+				if (!incomplete)
+					printf("Scenery gap: drawn %zu of %zu objects, budget %u/%u\n",
+						drawn.size(), expected.size(), m.read32(0x5011a0), m.read32(0x5011b0));
+				incomplete++;
+			}
+		};
+		for (int f = 1; f <= 4500; f++) {
+			const auto inputs = play->frame(f);
+			for (int c = 0; c < 3; c++) {
+				if (inputs.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(inputs.analog[c])));
+				m.m_inputs[c] = uint8_t(~inputs.pressed[c]);
+			}
+			if (f == 3300) m.on_instruction = trace;
+			m.run_frame();
+			const auto error = play->check(f, m);
+			if (!error.empty()) fprintf(stderr, "%s\n", error.c_str());
+			assert(error.empty());
+		}
+		printf("Acropolis scenery (smooth %s, LOD %s): %d lists, %d incomplete, %d budget skips\n",
+			smooth ? "on" : "off", lod ? "on" : "off", checked, incomplete, budget_skips);
+		assert(checked > 100 && incomplete == 0);
+		if (lod) assert(budget_skips > 0);
+		else assert(budget_skips == 0);
+		assert(phases.count(0x12) && phases.count(0x14));
+	}
+
 	static void backface_specular()
 	{
 		model1::regions regions;
@@ -34,7 +225,7 @@ struct model1_video_test
 		m.set_smooth(true);
 		m.reset();
 		bool saw_logo = false, back_only = true, hide_logo = false;
-		m.m_gameplay.object = [&](uint32_t, uint32_t poly, uint32_t, const float *) {
+		m.m_gameplay.object = [&](uint32_t, uint32_t, uint32_t poly, uint32_t, const float *) {
 			game::object_effects effect;
 			effect.hidden = poly != 0x1031c7 || hide_logo;
 			if (effect.hidden) return effect;
@@ -507,6 +698,10 @@ struct model1_video_test
 		a.slots[1].owner = b.slots[1].owner = car.owner;
 		m.blend_slots(a, b, .5);
 		assert(std::fabs(m.m_blend[1][9] - 10.5f) > 2);
+		m.set_smooth(false);
+		m.cpu().set_reg(19, 0x401700);
+		m.list_written(0, 40);
+		assert(m.m_list_owner[0][40] == 0x401700);
 	}
 
 	static void scenery_motion(const char *dir, bool extended)
@@ -858,14 +1053,14 @@ struct model1_video_test
 			const std::vector<uint32_t> baseline(m.frame().data(), m.frame().data() + n);
 			m.m_video = video;
 			auto original = m.m_gameplay.object;
-			m.m_gameplay.object = [](uint32_t, uint32_t poly, uint32_t, const float *) {
+			m.m_gameplay.object = [](uint32_t, uint32_t, uint32_t poly, uint32_t, const float *) {
 				game::object_effects effect;
 				effect.hidden = poly != 0x1031c7;
 				return effect;
 			};
 			m.redraw();
 			const std::vector<uint32_t> isolated(m.frame().data(), m.frame().data() + n);
-			m.m_gameplay.object = [](uint32_t, uint32_t, uint32_t, const float *) {
+			m.m_gameplay.object = [](uint32_t, uint32_t, uint32_t, uint32_t, const float *) {
 				game::object_effects effect;
 				effect.hidden = true;
 				return effect;
@@ -906,6 +1101,17 @@ struct model1_video_test
 int main(int argc, char **argv)
 {
 	model1_video_test::backface_specular();
+	model1_video_test::crash_materials();
+	if (argc > 2 && std::string(argv[2]) == "--crash-livery") {
+		for (bool native : { false, true })
+			for (bool smooth : { false, true }) model1_video_test::crash_livery(argv[1], smooth, native);
+		return 0;
+	}
+	if (argc > 2 && std::string(argv[2]) == "--scenery-distance") {
+		for (bool lod : { false, true })
+			for (bool smooth : { false, true }) model1_video_test::scenery_distance(argv[1], smooth, lod);
+		return 0;
+	}
 	if (argc > 2 && std::string(argv[2]) == "--logo-shading") {
 		model1_video_test::logo_shading(argv[1]);
 		return 0;
@@ -950,6 +1156,9 @@ int main(int argc, char **argv)
 			for (bool extended : { false, true })
 				model1_video_test::logo(argv[1], smooth, extended);
 	if (argc > 1) {
+		for (bool smooth : { false, true }) model1_video_test::crash_livery(argv[1], smooth);
+		for (bool lod : { false, true })
+			for (bool smooth : { false, true }) model1_video_test::scenery_distance(argv[1], smooth, lod);
 		model1_video_test::logo_shading(argv[1]);
 		model1_video_test::race_grid_hud(argv[1]);
 		model1_video_test::logo_handoff(argv[1]);

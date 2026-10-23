@@ -72,6 +72,8 @@ struct object_effects
 	std::function<void(float &, float &, float &)> point;
 	std::function<void(float &, float &, float &)> normal;
 	std::function<int(int)> polygon;
+	// Remap a texture word's material before palette lookup, retaining its lighting flags.
+	std::function<uint16_t(uint16_t)> material;
 	std::function<void(uint32_t, int, int &, int &, int &)> colour;
 };
 
@@ -96,13 +98,18 @@ struct gameplay_callbacks
 	// An optional aligned work-RAM word to observe after the CPU writes it (mask: bytes written).
 	uint32_t work_ram_watch = 0;
 	std::function<void(uint16_t)> work_ram_written;
+	// Optional adjustment of a completed TGP result as the V60 reads it.
+	std::function<uint32_t(uint32_t, uint32_t)> copro_result;
+	uint32_t read32_watch = 0;
+	std::function<uint32_t(uint32_t, uint32_t)> read32_value;
 	// Extra renderer-only objects attached to a matrix as the CPU writes it.
 	std::function<std::vector<render_object>()> matrix_objects;
 	// Snapshot active records when a relevant matrix is written, before visibility advances.
 	std::function<std::vector<record_visibility>(uint32_t)> record_visibility;
 	std::function<void()> render_begin;
 	std::function<void()> render_end;
-	std::function<object_effects(uint32_t, uint32_t, uint32_t, const float *)> object;
+	// Owner is the recorded RAM record, 1 for the static world, or 0 when unknown.
+	std::function<object_effects(uint32_t, uint32_t, uint32_t, uint32_t, const float *)> object;
 	// Diagnostic outlines instead of filled polygons; nullopt omits an object.
 	std::function<std::optional<uint32_t>(uint32_t, uint32_t)> wireframe;
 	std::function<std::optional<uint16_t>(uint32_t)> backdrop_tile;

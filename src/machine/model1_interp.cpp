@@ -78,7 +78,7 @@ void model1::list_written(int buffer, uint32_t word)
 		auto extra = m_gameplay.matrix_objects();
 		if (!extra.empty()) m_list_extra[buffer].emplace(word, std::move(extra));
 	}
-	if (!m_smooth || !m_video->records) return;
+	if ((!m_smooth && !m_gameplay.object) || !m_video->records) return;
 	const game::draw_records &r = *m_video->records;
 	std::vector<uint32_t> &owners = m_list_owner[buffer];
 	if (owners.empty()) owners.assign(0x8000, 0);
@@ -88,6 +88,7 @@ void model1::list_written(int buffer, uint32_t word)
 			if (w.caller && read32(m_maincpu.reg(31)) != w.caller) continue;
 			const uint32_t rec = m_maincpu.reg(w.record_register);
 			owner = rec >= r.records_from && rec < r.records_to ? rec : 1;
+			if (!m_smooth) break;
 			memcpy(m_list_camera[buffer].data(), &m_ram_b[r.camera - 0x500000], sizeof m_list_camera[buffer]);
 			m_list_has_camera[buffer] = true;
 			if (m_list_visibility_frame[buffer] != m_frame) {

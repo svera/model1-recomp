@@ -3,6 +3,13 @@
 This is a write-up of how the port was built and checked, for anyone who wants to know what "recomp" means here, how
 much of it comes from MAME, and how AI coding tools were used. The commit history has the detail; this is the overview.
 
+## Pull request checks
+
+The **Tests** GitHub Actions workflow runs all nine ROM-free test targets on macOS when a pull request
+is opened, updated with new commits, or reopened. It can also be run manually from the Actions tab.
+New updates cancel an older run for the same pull request. ROM-backed checks remain local: CI does
+not download game ROMs or require secrets.
+
 ## The approach
 
 Virtua Fighter (1993) runs on Sega's Model 1 board. Its game logic is a program for the main CPU, an NEC V60. Around
@@ -318,8 +325,12 @@ VR still observes the completed-list write, but only remembers which cells the a
 At the first static-scenery matrix write (`FF8500`, called from `FF8469`, return address `FF846F`),
 it reads additional static object records from the course table at `501948`. Those objects are attached
 to the matrix's display-list offset as host-only metadata, without inserting CPU commands or writing
-ROM, RAM, visibility bits or the polygon budget. All 256 cells are considered; cells outside the original
-selection are visited nearest first, without distance or directional culling.
+ROM, RAM, visibility bits or the polygon budget. All 256 cells are considered, nearest first, without
+distance or directional culling. A selected cell is not necessarily submitted: `FF84A2` skips it when
+the cumulative polygon cost at `5011A0` exceeds the budget at `5011B0`. The host follows that same
+per-cell budget check, including each object's cost in the third record word, and supplements skipped
+selected cells too. Otherwise nearby buildings disappear when they enter the arcade's selection,
+then pop back in when the budget permits them.
 
 The shared renderer draws these objects with that matrix and its material/light state. Interpolated
 frames snapshot the extra objects with their matrix slot, so they use the same camera interpolation
@@ -328,11 +339,15 @@ inherited sort depths unchanged. Static scenery bypasses the arcade budget and c
 but does not change which cars the CPU submits. Renderer geometry allocations have explicit bounds
 checks to prevent full-course geometry from overflowing the finite point/quad buffers.
 
-The desktop's Display > Draw distance choice defaults to Extended, saves the choice in VR's settings, and applies it to
+The desktop's Display > Draw distance choice defaults to Full, saves the choice in VR's settings, and applies it to
 the next list without restarting. Updated regression assertions cover all 256 camera cells,
 nearest-first additional objects, unchanged ROM/RAM and Arcade budgets, and CPU/register equality
-between distance modes during real-ROM runs. These regressions and the reported tunnel scene have
-not been run automatically, at the player's request; rebuilding remains part of the requested workflow.
+between distance modes during real-ROM runs. The ROM-free test checks budgets that stop after the
+first cell, exactly at a cell boundary, and beyond the whole selected list. With local ROMs,
+`build/bin/model1_video_test build/vr --scenery-distance` checks the Acropolis grid and race start
+with smooth motion on and off: every course-table object must be submitted exactly once, including
+objects from cells skipped by the arcade's budget. This is an automated coverage check, not visual
+verification.
 
 The initial 7x7 implementation was validated with the gameplay regression, which checks boundaries and masks,
 then compares actual rendered polygon counts at matching cameras using local ROMs on the interpreter and native
@@ -341,6 +356,49 @@ quads; the ranking's camera can now see the distant suspension bridge that the a
 The same test passes AddressSanitizer; Arcade's comparison picture matches the pre-change runner byte for byte.
 Native lockstep still passes VF's 18,000 frames and both 22,000-frame VR course scenarios with Extended enabled.
 The native desktop menu was also checked through both choices and a saved Arcade choice across a relaunch.
+
+## VR's model detail (LOD)
+
+Display > LOD defaults to Off and persists as `lod = off` in settings. Off keeps the near-detail
+car bodies and separate wheels at every distance; On restores the arcade's distance-based
+models. Static scenery already has a single detail level in its course-cell records, so it
+remains full detail in both modes. Draw distance independently controls scenery visibility.
+
+The TGP still executes its original program. Only the completed distance results read at
+`FEFBF5` and `FF0D3B`, the two car-rendering detail decisions, are treated as near when LOD is off.
+Collision, proximity and other TGP results remain unchanged. The normal model and damage
+selection code still runs, retaining car colours, animation and crash geometry.
+
+Full detail also bypasses the submission-budget comparisons at `FF848A` and `FF84A2` through
+a read override; the stored budget and the per-object command sizes are unchanged. Otherwise,
+more detailed cars could consume the arcade budget before scenery or other cars are submitted.
+The renderer-only full-course supplement follows the same budget policy to avoid duplicates.
+Changes apply to newly built lists without a restart.
+
+`make test-vr-gameplay` covers defaults, toggling, reset retention, scoped distance/budget reads,
+and scenery coverage under both budget policies. With local ROMs,
+`build/bin/vr_gameplay_test build/vr --lod` (or `--lod-native`) compares rendered detail while
+checking car positions, speed, track progress and collision state against arcade LOD on every
+frame, then verifies that switching LOD back on restores matching polygon counts.
+
+## VR's crash livery
+
+Standalone car-colour selection replaces the player's normal model pointers, but the arcade's
+collision and recovery routines also select red-only models directly (`FD377A` and `FD4A39`).
+Applying the normal pointers at frame end cannot stop those models appearing in a list already
+written that frame.
+
+Object effects now receive the matrix's recorded owner, including when smooth motion is disabled.
+For the standalone player only, VR remaps the red paint materials (`02`, `EE`, `F6`) on those
+models to the selected livery's B0 body paint (texture slot 1). Geometry, damage animation,
+non-paint materials and lighting flags are unchanged. Opponents, linked-cabinet mode, attract
+scenes and the default red livery are excluded.
+
+`make test-model1-video` checks every texture-word value against all seven non-default paint
+selections. With local ROMs, `build/bin/model1_video_test build/vr --crash-livery` injects the
+three arcade impact states and checks actual rendered material callbacks with the interpreter
+and native recompiler, with smooth motion both off and on. It verifies green paint, unchanged
+detail materials and opponent appearances, and that all three original impact models still draw.
 
 ## VR's foreground SEGA logo
 

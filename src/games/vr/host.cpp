@@ -26,6 +26,10 @@ public:
 
 	void load_settings(const settings_map &settings) override
 	{
+		if (const auto it = settings.find("lod"); it != settings.end()) {
+			if (it->second == "on" || it->second == "off") lod = it->second == "on";
+			else fprintf(stderr, "VR: invalid lod '%s'; expected on or off\n", it->second.c_str());
+		}
 		if (const auto coins = settings.find("arcade_coins"); coins != settings.end()) {
 			int value;
 			const auto &text = coins->second;
@@ -43,6 +47,7 @@ public:
 	void save_settings(FILE *f) const override
 	{
 		fprintf(f, "draw_distance = %s\n", extended ? "extended" : "arcade");
+		fprintf(f, "lod = %s\n", lod ? "on" : "off");
 		if (arcade_coin >= 0) fprintf(f, "arcade_coins = %d\n", arcade_coin);
 	}
 
@@ -54,6 +59,7 @@ public:
 			std::abort();
 		}
 		set_extended_draw_distance(context.machine, extended);
+		set_lod(context.machine, lod);
 	}
 
 	std::vector<menu_item> display_menu_items() override
@@ -63,6 +69,13 @@ public:
 			[this](int d) {
 				extended = (int(extended) + d + 2) % 2;
 				set_extended_draw_distance(ctx->machine, extended);
+				ctx->settings_changed();
+			} },
+			{ "LOD", "Off keeps the highest-detail models at every distance. On uses the arcade's simpler distant models. Scenery keeps its full detail in either mode; Draw distance controls how much scenery is visible. Off can lower performance.",
+			[this] { return lod ? "On" : "Off"; },
+			[this](int d) {
+				lod = (int(lod) + d + 2) % 2;
+				set_lod(ctx->machine, lod);
 				ctx->settings_changed();
 			} } };
 	}
@@ -210,6 +223,7 @@ private:
 
 	host_context *ctx = nullptr;
 	bool extended = true;
+	bool lod = false;
 	camera_cycle cameras;
 	int arcade_coin = -1;
 	std::optional<int> language_before;

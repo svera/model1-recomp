@@ -1097,7 +1097,7 @@ float model1::compute_specular(glm::vec3& normal, glm::vec3& light, float diffus
 // the preceding object so the z~40k wall occludes them (real-hardware
 // capture); resetting per object made them sort at z=0 (nearest) and paint
 // through the wall.
-void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, float &old_z)
+void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, float &old_z, uint32_t owner)
 {
 	// Protect against bad data when attacking a super destroyer
 	if(tex_adr == 0xffffffff || size >= 0x1000000)
@@ -1120,7 +1120,7 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 	const bool foreground = std::find(m_video->foreground_objects.begin(), m_video->foreground_objects.end(), poly_adr) != m_video->foreground_objects.end();
 	poly_adr &= 0x7fffff;
 	game::object_effects effect;
-	if (m_gameplay.object) effect = m_gameplay.object(tex_adr, poly_adr, size, poly_data);
+	if (m_gameplay.object) effect = m_gameplay.object(owner, tex_adr, poly_adr, size, poly_data);
 	if (effect.hidden) return;
 	const float original_viewx = m_view->viewx;
 	const bool pin_object = hud_edge_pinning_active() &&
@@ -1354,6 +1354,7 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 			// additionally blinks by rotating the BGR channels on alternate frames.
 			uint16_t tex_data = m_tgp_ram[tex_adr - 0x40000];
 			if (unset_pen && tex_data == 0xffff) tex_data = uint16_t(0xfc00 | unset_pen);   // (see above; still unlit)
+			if (effect.material) tex_data = effect.material(tex_data);
 			int color = m_paletteram16[0x1000 | (tex_data & 0x3ff)];
 			int r = (color >> 0x0) & 0x1f;
 			int g = (color >> 0x5) & 0x1f;
@@ -1852,6 +1853,7 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 
 		m_view->init_translation_matrix();
 		float old_z = 0;
+		uint32_t owner = 0;
 		if (m_gameplay.render_begin) m_gameplay.render_begin();
 		struct render_scope {
 			std::function<void()> &end;
@@ -1878,11 +1880,11 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 					if (m_replaying && smooth_matrix(readi(list_offset + 4), blended)) {
 						memcpy(current, m_view->translation, sizeof current);
 						m_view->set_translation_matrix(blended);
-						push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z);
+						push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z, owner);
 						m_view->set_translation_matrix(current);
 						m_shade_from = m_shade_to = m_shade_light = nullptr;
 					} else
-						push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z);
+						push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z, owner);
 				}
 				list_offset += 8;
 				break;
@@ -1890,7 +1892,7 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 				// command 0x41 = object drawn above the HUD (e.g. SWA radar blips)
 				m_above_hud_seen = true;
 				if (pass == RENDER_ABOVE_HUD)
-					push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z);
+					push_object(readi(list_offset + 2), readi(list_offset + 4), readi(list_offset + 6), old_z, owner);
 				list_offset += 8;
 				break;
 			case 2:
@@ -2001,6 +2003,14 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 				}
 				m_view->set_translation_matrix(mat);
 				if (m_replaying) m_replay_slot++;
+				owner = 0;
+				if (m_replaying) {
+					const auto &slots = m_logic[m_replay_older ? 0 : 1].slots;
+					if (m_replay_slot >= 0 && size_t(m_replay_slot) < slots.size()) owner = slots[m_replay_slot].owner;
+				} else {
+					const int buffer = m_display_list_current == m_display_list1 ? 1 : 0;
+					if (!m_list_owner[buffer].empty()) owner = m_list_owner[buffer][list_offset & 0x7fff];
+				}
 				if (m_replaying && pass == RENDER_BELOW_HUD && !retained_drawn) {
 					const auto &slots = m_logic[m_replay_older ? 0 : 1].slots;
 					if (m_replay_slot >= 0 && size_t(m_replay_slot) < slots.size() && slots[m_replay_slot].visibility) {
@@ -2017,7 +2027,7 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 								float blended[12];
 								m_view->set_translation_matrix(smooth_matrix(object.polygon, blended) ? blended : part.mat);
 								quad_t *first = m_quadpt;
-								push_object(object.texture, object.polygon, object.size, retained_z);
+								push_object(object.texture, object.polygon, object.size, retained_z, part.owner);
 								for (quad_t *q = first; q < m_quadpt; q++) q->obj = object.polygon;
 								m_shade_from = m_shade_to = m_shade_light = nullptr;
 							}
@@ -2042,7 +2052,7 @@ void model1::tgp_render(bitmap_rgb32 &bitmap, const rectangle &cliprect, render_
 							float blended[12];
 							if (m_replaying && smooth_matrix(object.polygon, blended)) m_view->set_translation_matrix(blended);
 							quad_t *first = m_quadpt;
-							push_object(object.texture, object.polygon, object.size, extra_z);
+							push_object(object.texture, object.polygon, object.size, extra_z, owner);
 							for (quad_t *q = first; q < m_quadpt; q++) q->obj = object.polygon;
 							m_view->set_translation_matrix(mat);
 							m_shade_from = m_shade_to = m_shade_light = nullptr;

@@ -24,7 +24,8 @@ then confirm. Windows may show SmartScreen for the same reason.
 CONTROLS
 Open the menu with Esc or View/Select, then Controls > Player 1. Keyboard: Left/Right steer,
 Up accelerates, Down brakes, X/Z shift up/down, C cycles the four cameras. Gamepad: left stick X
-steers, right trigger accelerates, left trigger brakes, Y / Triangle cycles cameras.
+steers, right trigger accelerates, left trigger brakes, A / Cross shifts up, B / Circle
+shifts down, Y / Triangle cycles cameras, and D-pad Up inserts a coin in Arcade mode.
 The same bindings can be changed there; the game starts with
 the configured Start control.
 For manual transmission, hold Start on the course selection screen while confirming with Accelerator.
@@ -33,6 +34,8 @@ Display settings, antialiasing, sound, and saves are available from the menu. Al
 shapes, including 16:9 and 16:10, widen the view without stretching the HUD. Off-center HUD
 elements follow the screen edges. Picture shape changes do not restart the game; the app
 keeps the arcade's MONITOR TYPE at 4:3 NORMAL.
+Display > LOD defaults to Off for full-detail models at every distance. Turn it On for the
+arcade's simpler distant models and better performance. Draw distance controls scenery visibility.
 Virtua Racing recompiles your ROM's V60 program to native code at startup. Use --interp to run on the
 Model 1 interpreter instead.
 

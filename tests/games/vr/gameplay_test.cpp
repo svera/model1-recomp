@@ -228,8 +228,12 @@ static void scenery_lists()
 	v60_bus &bus = machine;
 	auto callbacks = game::vr::create_gameplay(machine);
 	auto state = std::static_pointer_cast<game::vr::gameplay_state>(callbacks.state);
+	state->lod = true;
 	assert(machine.program_rom() == original_rom);
+	for (bool lod : { false, true })
+	for (int budget : { 0, 10, 5000 })
 	for (int center = 0; center < 256; center++) {
+		state->lod = lod;
 		std::fill(ram.begin(), ram.end(), 0xcd);
 		std::fill_n(ram.begin() + 0x1aa0, 32, 0);
 		const int cx = center & 15, cy = center >> 4;
@@ -244,6 +248,8 @@ static void scenery_lists()
 			}
 		ram[0x1cc0] = uint8_t(n);
 		bus.write32(0x501948, 0x8000);
+		bus.write32(0x5011a0, 37);
+		bus.write32(0x5011b0, uint32_t(37 + budget));
 		bus.write32(0x500100, 0xff846f);
 		machine.cpu().set_reg(31, 0x500100);
 		machine.cpu().set_reg(22, uint32_t(center));
@@ -253,8 +259,10 @@ static void scenery_lists()
 		assert(callbacks.matrix_objects().empty());
 		machine.cpu().pc_ref() = 0xff8500;
 		const auto objects = callbacks.matrix_objects();
-		assert(objects.size() == size_t(256 - n));
-		std::array<bool, 256> seen = state->scenery_selected;
+		const int submitted = lod ? std::min(n, budget / 10 + 1) : n;
+		assert(objects.size() == size_t(256 - submitted));
+		std::array<bool, 256> seen{};
+		for (int i = 0; i < submitted; i++) seen[ram[0x1cc1 + i]] = true;
 		int last_distance = -1;
 		for (const auto &object : objects) {
 			const int cell = int(object.polygon) - 1;
@@ -296,6 +304,96 @@ static void scenery_lists()
 	assert(machine_state->scenery_pending);
 	machine.reset();
 	assert(!machine_state->scenery_pending);
+}
+
+static void lod_settings()
+{
+	model1::regions regions;
+	regions.title = game::id{ "vr" };
+	model1 machine(std::move(regions));
+	const auto state = std::static_pointer_cast<game::vr::gameplay_state>(machine.game_state());
+	assert(!state->lod);
+	machine.write32(0x5011b0, 5500);
+	for (uint32_t pc : { 0xff848au, 0xff84a2u, 0xff8571u, 0u }) {
+		machine.cpu().pc_ref() = pc;
+		assert(machine.read32(0x5011b0) == (pc == 0xff848a || pc == 0xff84a2 ? 0x7fffffffu : 5500u));
+		assert(machine.work_ram()[0x11b0] == uint8_t(5500));
+	}
+	for (uint32_t caller : { 0xfefbf5u, 0xff0d3bu, 0xff7364u, 0xffaaedu, 0xffac09u, 0xffaf07u }) {
+		for (float distance : { -100.0f, -0.0f, 0.0f, 0.1f, 40.0f, 10000.0f }) {
+			assert(game::vr::lod_distance(true, caller, distance) == distance);
+			const float full = game::vr::lod_distance(false, caller, distance);
+			if (caller == 0xfefbf5 || caller == 0xff0d3b) assert(full < 0);
+			else assert(full == distance);
+		}
+	}
+	game::vr::set_lod(machine, true);
+	assert(state->lod);
+	machine.cpu().pc_ref() = 0xff84a2;
+	assert(machine.read32(0x5011b0) == 5500);
+	machine.reset();
+	assert(state->lod);
+	game::vr::set_lod(machine, false);
+	assert(!state->lod);
+}
+
+static void rom_lod(const char *dir, bool native)
+{
+	model1 arcade(load_regions(dir, game::id{ "vr" })), full(load_regions(dir, game::id{ "vr" }));
+	arcade.set_smooth(false);
+	full.set_smooth(false);
+	game::vr::set_lod(arcade, true);
+	if (native) {
+		rec::hints map;
+		assert(map.read("assets/games/vr/vr_map.txt"));
+		rec::attach(full.cpu(), "vr");
+		assert(rec::build_native(full.program_rom(), map));
+		full.run_cpu = [](int n) { rec::run(n); };
+	}
+	arcade.reset();
+	full.reset();
+	const auto rom = full.program_rom();
+	auto play = game::make_auto_play(game::id{ "vr" }, "alternate", 12345, false);
+	assert(play);
+	int more = 0, far = 0, near = 0;
+	arcade.on_instruction = [&](uint32_t pc) {
+		if (pc == 0xfefbf8 || pc == 0xff0d3e) {
+			if (arcade.cpu().reg(11) & 0x80000000) near++;
+			else far++;
+		}
+	};
+	if (!native) full.on_instruction = [&](uint32_t pc) {
+		if (pc == 0xfefbf8 || pc == 0xff0d3e) assert(full.cpu().reg(11) & 0x80000000);
+	};
+	for (int f = 1; f <= 4800; f++) {
+		const auto inputs = play->frame(f);
+		for (int c = 0; c < 3; c++) {
+			if (inputs.analog[c] >= 0) {
+				assert(arcade.set_analog_input(c, uint8_t(inputs.analog[c])));
+				assert(full.set_analog_input(c, uint8_t(inputs.analog[c])));
+			}
+			arcade.m_inputs[c] = full.m_inputs[c] = uint8_t(~inputs.pressed[c]);
+		}
+		arcade.run_frame();
+		full.run_frame();
+		assert(arcade.work_ram()[0x1138] == full.work_ram()[0x1138]);
+		for (uint32_t car = 0x400d00; car <= 0x401e80; car += 0x280)
+			for (uint32_t field : { 0x1eu, 0x22u, 0x26u, 0x30u, 0x3cu, 0x44u, 0x191u, 0x1abu })
+				assert(arcade.read32(car + field) == full.read32(car + field));
+		if (full.frame_quads() > arcade.frame_quads()) more++;
+	}
+	printf("VR LOD (%s): %d fuller-detail frames, %d near and %d distant arcade selections, unchanged car simulation\n",
+		native ? "native" : "interpreter", more, near, far);
+	assert(more > 100 && far > 100 && near > 100);
+	assert(full.program_rom() == rom);
+	game::vr::set_lod(full, true);
+	full.on_instruction = {};
+	for (int f = 0; f < 120; f++) {
+		arcade.run_frame();
+		full.run_frame();
+		if (f > 10) assert(arcade.frame_quads() == full.frame_quads());
+	}
+	if (native) assert(rec::fallback_count() == 0);
 }
 
 static void rom_language(const char *dir, bool native)
@@ -768,7 +866,10 @@ int main(int argc, char **argv)
 	machine_settings(true);
 	scripted_inputs();
 	scenery_lists();
-	if (argc > 2 && (std::string(argv[2]) == "--language" || std::string(argv[2]) == "--language-native"))
+	lod_settings();
+	if (argc > 2 && (std::string(argv[2]) == "--lod" || std::string(argv[2]) == "--lod-native"))
+		rom_lod(argv[1], std::string(argv[2]) == "--lod-native");
+	else if (argc > 2 && (std::string(argv[2]) == "--language" || std::string(argv[2]) == "--language-native"))
 		rom_language(argv[1], std::string(argv[2]) == "--language-native");
 	else if (argc > 2 && (std::string(argv[2]) == "--settings" || std::string(argv[2]) == "--settings-native"))
 		rom_machine_settings(argv[1], std::string(argv[2]) == "--settings-native");

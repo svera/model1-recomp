@@ -214,6 +214,8 @@ u16 model1::lle_v60_r(uint32_t a)
 			}
 			m_v60_copro_fifo_r = t.fifo_out.front();
 			t.fifo_out.pop_front();
+			if (m_gameplay.copro_result)
+				m_v60_copro_fifo_r = m_gameplay.copro_result(m_maincpu.pc(), m_v60_copro_fifo_r);
 			return u16(m_v60_copro_fifo_r);
 		}
 		return u16(m_v60_copro_fifo_r >> 16);

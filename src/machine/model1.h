@@ -921,7 +921,7 @@ private:
 	int push_direct(int list_offset);
 	int draw_direct(bitmap_rgb32 &bitmap, const rectangle &cliprect, int list_offset);
 	int skip_direct(int list_offset) const;
-	void    push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, float &old_z);
+	void    push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, float &old_z, uint32_t owner = 0);
 	void    draw_objects(bitmap_rgb32 &bitmap, const rectangle &cliprect);
 
 	void set_current_render_list();

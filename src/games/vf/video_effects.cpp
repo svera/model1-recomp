@@ -230,7 +230,7 @@ void configure_video(model1 &machine, const std::shared_ptr<gameplay_state> &sta
 		};
 	}
 	callbacks.render_begin = [state] { state->m_head_seen.clear(); state->neck_settle(); };
-	callbacks.object = [state, &machine](uint32_t tex_adr, uint32_t poly_adr, uint32_t size, const float *poly_data) {
+	callbacks.object = [state, &machine](uint32_t, uint32_t tex_adr, uint32_t poly_adr, uint32_t size, const float *poly_data) {
 		game::object_effects effect;
 		const bool scenery = poly_adr < VIDEO.scenery_polys_end;
 		if ((getenv("VF_FIGHTERS_ONLY") && scenery) || (getenv("VF_STAGE_ONLY") && !scenery)) { effect.hidden = true; return effect; }

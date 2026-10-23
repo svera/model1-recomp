@@ -3,6 +3,7 @@
 #include "../../machine/model1.h"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -58,21 +59,9 @@ std::vector<render_object> scenery_objects(model1 &machine, gameplay_state &stat
 		return bus.read32(address);
 	};
 	read_rom(table, 256 * 4);
-	std::array<std::pair<int, uint8_t>, 256> cells;
-	const int center = int(machine.cpu().reg(22));
-	if (center < 0 || center > 255) {
-		fprintf(stderr, "VR draw distance: invalid anchor cell %d\n", center);
-		std::abort();
-	}
-	for (int cell = 0; cell < 256; cell++) {
-		const int dx = (cell & 15) - (center & 15), dy = (cell >> 4) - (center >> 4);
-		cells[cell] = { dx * dx + dy * dy, uint8_t(cell) };
-	}
-	std::sort(cells.begin(), cells.end());
-	for (const auto &[distance, cell] : cells) {
-		if (state.scenery_selected[cell]) continue;
+	auto visit_cell = [&](int cell, auto visit) {
 		uint32_t record = read_rom(table + uint32_t(cell) * 4, 4);
-		if (!record || record == 0xffffffff) continue;
+		if (!record || record == 0xffffffff) return;
 		for (int guard = 0; ; guard++, record += 12) {
 			if (guard == 4096) {
 				fprintf(stderr, "VR draw distance: unterminated scenery cell %d\n", cell);
@@ -85,8 +74,38 @@ std::vector<render_object> scenery_objects(model1 &machine, gameplay_state &stat
 				fprintf(stderr, "VR draw distance: invalid scenery polygon %08x in cell %d\n", polygon, cell);
 				std::abort();
 			}
-			objects.push_back({ bus.read32(record + 4), polygon, 0 });
+			visit(record, polygon);
 		}
+	};
+	// FF84A2 tests the cumulative budget before each cell, not each object.
+	// Selected cells after the budget is exhausted still need host-only geometry.
+	std::array<bool, 256> submitted{};
+	uint32_t consumed = bus.read32(0x5011a0);
+	const uint32_t budget = bus.read32(0x5011b0);
+	const bool unlimited = !state.lod;
+	const auto &ram = machine.work_ram();
+	for (int i = 0; i < ram[SCENERY_COUNT]; i++) {
+		const int cell = ram[SCENERY_COUNT + 1 + i];
+		if (!unlimited && int32_t(consumed) > int32_t(budget)) continue;
+		submitted[cell] = true;
+		visit_cell(cell, [&](uint32_t record, uint32_t) { consumed += bus.read32(record + 8); });
+	}
+	std::array<std::pair<int, uint8_t>, 256> cells;
+	const int center = int(machine.cpu().reg(22));
+	if (center < 0 || center > 255) {
+		fprintf(stderr, "VR draw distance: invalid anchor cell %d\n", center);
+		std::abort();
+	}
+	for (int cell = 0; cell < 256; cell++) {
+		const int dx = (cell & 15) - (center & 15), dy = (cell >> 4) - (center >> 4);
+		cells[cell] = { dx * dx + dy * dy, uint8_t(cell) };
+	}
+	std::sort(cells.begin(), cells.end());
+	for (const auto &[distance, cell] : cells) {
+		if (submitted[cell]) continue;
+		visit_cell(cell, [&](uint32_t record, uint32_t polygon) {
+			objects.push_back({ bus.read32(record + 4), polygon, 0 });
+		});
 	}
 	return objects;
 }
@@ -130,6 +149,44 @@ gameplay_callbacks create_gameplay(model1 &machine)
 			prepare_scenery(machine, *state);
 	};
 	callbacks.matrix_objects = [&machine, state] { return scenery_objects(machine, *state); };
+	callbacks.copro_result = [state](uint32_t pc, uint32_t value) {
+		return std::bit_cast<uint32_t>(lod_distance(state->lod, pc, std::bit_cast<float>(value)));
+	};
+	callbacks.read32_watch = 0x5011b0;
+	callbacks.read32_value = [state](uint32_t pc, uint32_t value) {
+		// More detailed cars must not exhaust the arcade's submission budget.
+		if (!state->lod && (pc == 0xff848a || pc == 0xff84a2)) return 0x7fffffffu;
+		return value;
+	};
+	callbacks.object = [&machine, state](uint32_t owner, uint32_t, uint32_t polygon, uint32_t, const float *) {
+		object_effects effect;
+		const uint8_t phase = machine.work_ram()[0x1138];
+		if (!state->standalone_car_color || (phase != 0x12 && phase != 0x14) ||
+			machine.read8(0x40dc8c) || owner != machine.read32(0x501320)) return effect;
+		const uint32_t color = machine.read8(0x40dca2);
+		if (!color) return effect;
+		if (color >= 8) {
+			fprintf(stderr, "VR: invalid standalone livery color %u\n", color);
+			std::abort();
+		}
+		// Collision and recovery use standalone red models rather than the livery pointers.
+		// Keep their geometry, but use the selected B0 body's paint material (texture slot 1).
+		bool standalone = polygon == machine.read32(machine.read32(0xfcd395 + 4));
+		for (int i = 0; !standalone && i < 16; i++)
+			standalone = polygon == machine.read32(machine.read32(0xfd377a + i * 4));
+		for (int i = 0; !standalone && i < 3; i++)
+			standalone = polygon == machine.read32(machine.read32(0xfd4a39 + i * 4));
+		if (!standalone) return effect;
+		const uint32_t body = machine.read32(0xfcd195 + color * 32 + 16);
+		const uint32_t texture = machine.read32(body + 4);
+		const uint16_t paint = machine.texture_word(texture - 0x40000 + 1) & 0x3ff;
+		effect.material = [paint](uint16_t material) {
+			const uint16_t pen = material & 0x3ff;
+			if (pen != 0x02 && pen != 0xee && pen != 0xf6) return material;
+			return uint16_t((material & 0xfc00) | paint);
+		};
+		return effect;
+	};
 	callbacks.record_visibility = [&machine](uint32_t owner) {
 		std::vector<game::record_visibility> records;
 		if (owner < 0x400d00 || owner > 0x401e80 || (owner - 0x400d00) % 0x280)
@@ -169,6 +226,18 @@ void set_extended_draw_distance(model1 &machine, bool extended)
 	auto state = std::static_pointer_cast<gameplay_state>(machine.game_state());
 	state->extended_draw_distance = extended;
 	state->scenery_pending = false;
+}
+
+void set_lod(model1 &machine, bool enabled)
+{
+	std::static_pointer_cast<gameplay_state>(machine.game_state())->lod = enabled;
+}
+
+float lod_distance(bool enabled, uint32_t caller, float distance)
+{
+	// Only the two render-only car detail tests, never collision/proximity queries.
+	if (!enabled && (caller == 0xfefbf5 || caller == 0xff0d3b)) return -1.0f;
+	return distance;
 }
 
 namespace {

@@ -33,6 +33,7 @@ multiple games; this repository currently supports Virtua Racing.
 - All three courses, four camera views, and the original arcade racing.
 - Sharper graphics, widescreen and ultrawide views without stretching the HUD.
 - Original arcade motion or smoother 60 / 120 FPS.
+- Full-detail models by default, with an optional LOD toggle for simpler distant models.
 - Keyboard and gamepad support, with customizable controls.
 - Saved settings and high scores.
 - Car color, language, difficulty, and course settings.
@@ -62,10 +63,10 @@ Non-Steam Game and set **Start In** to the extracted **VirtuaRacing** folder.
 | Steer | Left / Right | Left stick |
 | Accelerate | Up | Right trigger |
 | Brake | Down | Left trigger |
-| Shift up / down | X / Z | Assign in Controls |
+| Shift up / down | X / Z | A / B (Cross / Circle) |
 | Change camera | C | Y / Triangle |
 | Start | 1 | Start |
-| Insert coin (Arcade mode) | 5 | Assign in Controls |
+| Insert coin (Arcade mode) | 5 | D-pad Up |
 | Open menu | Esc | View / Select |
 
 Change bindings under **Controls > Player 1**.

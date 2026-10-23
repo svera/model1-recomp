@@ -62,6 +62,9 @@ int main()
 	assert(controls.key[game::vr::C_BRAKE] == SDL_SCANCODE_DOWN);
 	assert(controls.key[C_UP] == SDL_SCANCODE_X);
 	assert(controls.key[C_DOWN] == SDL_SCANCODE_Z);
+	assert(controls.pad[C_UP] == SDL_GAMEPAD_BUTTON_SOUTH);
+	assert(controls.pad[C_DOWN] == SDL_GAMEPAD_BUTTON_EAST);
+	assert(controls.pad[C_COIN] == SDL_GAMEPAD_BUTTON_DPAD_UP);
 	assert(controls.key[game::vr::C_ACCELERATOR] != controls.key[C_RIGHT]);
 	assert(controls.pad[game::vr::C_CAMERA] == SDL_GAMEPAD_BUTTON_NORTH);
 	assert(controls.key[game::vr::C_CAMERA] == SDL_SCANCODE_C);

@@ -7,6 +7,7 @@ namespace game::vr {
 struct gameplay_state : game::gameplay_state
 {
 	bool extended_draw_distance = true;
+	bool lod = false;
 	bool scenery_pending = false;
 	bool attract_rank_pending = false;
 	bool standalone_car_color = false;
@@ -15,6 +16,8 @@ struct gameplay_state : game::gameplay_state
 
 gameplay_callbacks create_gameplay(model1 &machine);
 void set_extended_draw_distance(model1 &machine, bool extended);
+void set_lod(model1 &machine, bool enabled);
+float lod_distance(bool enabled, uint32_t caller, float distance);
 int language_value(model1 &machine);   // 0 Japanese, 1 English, -1 before EEPROM initialization
 bool set_language(model1 &machine, int language);
 inline constexpr int FREE_PLAY = 26;

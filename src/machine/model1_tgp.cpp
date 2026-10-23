@@ -1218,6 +1218,8 @@ u16 model1::v60_copro_fifo_r(offs_t offset, u16 mem_mask)
 		if (m_copro_fifo_out->is_empty())
 			m_tgp_underflow[m_maincpu.pc()]++;
 		m_v60_copro_fifo_r = m_copro_fifo_out->pop();
+		if (m_gameplay.copro_result)
+			m_v60_copro_fifo_r = m_gameplay.copro_result(m_maincpu.pc(), m_v60_copro_fifo_r);
 		return m_v60_copro_fifo_r;
 
 	} else
