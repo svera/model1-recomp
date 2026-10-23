@@ -1,6 +1,6 @@
 # Model 1 Recomps
 
-<p align="center"><b>SEGA's classic arcade games on your computer, with sharper graphics,
+<p align="center"><b>SEGA classic arcade games on your computer, with sharper graphics,
 widescreen support, and smooth motion at up to 120 FPS.</b></p>
 
 This project forks Mr. Finster's superb [Virtua Fighter recomp](https://github.com/mr-finster/vf1-recomp), refactoring it to support the rest of Sega's Model 1 arcade hardware games library as native desktop runtimes. The Model 1 was used by
