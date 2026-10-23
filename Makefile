@@ -20,7 +20,7 @@ CORO_ASM = src/rt/coro_x86_64.S
 endif
 
 CORE = src/core/v60_device.cpp src/core/mb86233.cpp
-SOUND = src/machine/m1audio.cpp src/machine/multipcm.cpp third_party/ymfm/ymfm_opn.cpp third_party/ymfm/ymfm_adpcm.cpp third_party/ymfm/ymfm_ssg.cpp
+SOUND = src/machine/m1audio.cpp src/machine/multipcm.cpp src/machine/dsbz80.cpp src/machine/mpeg_audio.cpp third_party/ymfm/ymfm_opn.cpp third_party/ymfm/ymfm_adpcm.cpp third_party/ymfm/ymfm_ssg.cpp
 MUSASHI_OBJ = $(OBJ)/musashi/m68kcpu.o $(OBJ)/musashi/m68kops.o $(OBJ)/musashi/m68kdasm.o $(OBJ)/musashi/softfloat.o
 # the player's MAME set read at launch: the shared loader (each host adds its game's tables)
 ROMSET = src/machine/model1_romset.cpp

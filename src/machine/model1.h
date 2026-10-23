@@ -41,6 +41,7 @@ public:
 		std::vector<uint8_t> maincpu, copro_tables, copro_data, polygons, sndcpu, pcm1, pcm2;
 		std::vector<uint8_t> tgp_program;   // 315-5724.bin, when the set has it
 		std::vector<uint8_t> ioboard;       // epr-14869b.25 (model1io), when there
+		std::vector<uint8_t> mpegcpu, mpeg; // DSB ROMs (SWA): enable_sound adds the board when present
 		game::id title;                 // the game (src/games: its own code and data)
 	};
 
@@ -62,6 +63,14 @@ public:
 	bool tgp_is_lle() const { return bool(m_lle); }
 	bool tgp_has_hle() const { return bool(m_tgp_hle_reset); }
 	uint64_t tgp_cycles_executed() const;
+	struct tgp_diagnostics {
+		uint64_t input_written = 0, input_read = 0, output_written = 0, output_read = 0;
+		uint64_t input_waits = 0, output_waits = 0, sync_limits = 0;
+		size_t input_pending = 0, output_pending = 0, input_peak = 0, output_peak = 0;
+		uint16_t pc = 0;
+		bool waiting = false;
+	};
+	tgp_diagnostics tgp_status() const;
 	// Renders the 3D at `scale` times the arcade's 496x384 (1 = the arcade picture, exact).
 	void set_render_scale(int scale);
 	// Widescreen: `aspect` is the picture's width/height (4/3 = the arcade's). The 3D view and the
@@ -119,7 +128,7 @@ public:
 	// The boot is over (the game has sent its first camera: the attract has started).
 	bool past_boot() const;
 	// Work RAM survives a reset: the last camera forgotten, so past_boot waits for the new boot's.
-	void forget_camera() { std::fill_n(&m_ram_b[m_profile->camera_ram], 4, 0); }
+	void forget_camera() { if (m_profile->camera_ram) std::fill_n(&m_ram_b[*m_profile->camera_ram], 4, 0); }
 	// Frames run without drawing them (the display lists' uploads still happen, as MAME's skip).
 	void set_drawing(bool on) { m_draw = on; }
 	// Draws the picture last shown again, at the current settings (a change of scale, shape or
@@ -194,10 +203,15 @@ public:
 
 	// Polygons drawn in the last frame, and the camera the game last sent (0 between scenes).
 	int frame_quads() const { return m_last_quads; }
-	uint32_t camera() const { const uint8_t *p = &m_ram_b[m_profile->camera_ram]; return p[0] | p[1] << 8 | p[2] << 16 | uint32_t(p[3]) << 24; }
+	uint32_t camera() const
+	{
+		if (!m_profile->camera_ram) return 0;
+		const uint8_t *p = &m_ram_b[*m_profile->camera_ram];
+		return p[0] | p[1] << 8 | p[2] << 16 | uint32_t(p[3]) << 24;
+	}
 	// the profile's test_menu_mode in its TEST MENU (VF: 3), but also for a moment in attract
-	uint8_t game_mode() const { return m_ram_b[m_profile->mode_ram]; }
-	bool in_test_menu_mode() const { return game_mode() == m_profile->test_menu_mode; }
+	uint8_t game_mode() const { return m_profile->mode_ram ? m_ram_b[*m_profile->mode_ram] : 0; }
+	bool in_test_menu_mode() const { return m_profile->mode_ram && game_mode() == m_profile->test_menu_mode; }
 	// Raw board EEPROM image for persistence; words are available only on the real I/O board.
 	uint8_t *eeprom() { return m_ioboard ? reinterpret_cast<uint8_t *>(m_ioboard->eeprom) : &m_dpram[0x100]; }
 	uint16_t *eeprom_words() { return m_ioboard ? m_ioboard->eeprom : nullptr; }
@@ -223,6 +237,7 @@ public:
 	// collects here until the host takes it.
 	void enable_sound();
 	void set_volumes(float music, float effects);   // music / effects and voices, 1 = as the cabinet
+	m1audio *audio() { return m_audio.get(); }
 	std::vector<int16_t> m_audio_out;
 
 	struct spoint_t

@@ -186,7 +186,7 @@ hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const playe
 		if (kmenu && !key_menu_was[p]) hk = hotkey::menu;
 		key_menu_was[p] = kmenu;
 		for (int a = 0; a < C_COUNT; a++)
-			if (key(ctl[p].key[a])) in[1 + p] |= BITS[a];
+			if (key(ctl[p].key[a])) prof.press(in, p, a);
 		const bool kstart = key(ctl[p].key[C_START]);
 		bool start_held = kstart;
 		if (kstart && !key_start_was[p]) press_start();
@@ -200,7 +200,7 @@ hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const playe
 		const uint8_t coin_bit = p ? IN0_COIN2 : IN0_COIN1;
 		const uint8_t start_bit = prof.start_bits[p];
 		if (SDL_Gamepad *g = pads[p]) {
-			uint8_t &b = in[1 + p];
+			auto press = [&](int a) { prof.press(in, p, a); };
 			auto btn = [&](SDL_GamepadButton x) { return SDL_GetGamepadButton(g, x); };
 			int lx = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTX), ly = SDL_GetGamepadAxis(g, SDL_GAMEPAD_AXIS_LEFTY);
 			const int dead = 12000;
@@ -225,10 +225,10 @@ hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const playe
 			if (touch && !st.touch_was) hk = hotkey::menu;
 			st.touch_was = touch;
 			// the d-pad and left stick: the game's Up, Down, Left and Right (those it has as buttons)
-			if (btn(SDL_GAMEPAD_BUTTON_DPAD_UP) || ly < -dead) b |= BITS[C_UP];
-			if (btn(SDL_GAMEPAD_BUTTON_DPAD_DOWN) || ly > dead) b |= BITS[C_DOWN];
-			if (btn(SDL_GAMEPAD_BUTTON_DPAD_LEFT) || lx < -dead) b |= BITS[C_LEFT];
-			if (btn(SDL_GAMEPAD_BUTTON_DPAD_RIGHT) || lx > dead) b |= BITS[C_RIGHT];
+			if (btn(SDL_GAMEPAD_BUTTON_DPAD_UP) || ly < -dead) press(C_UP);
+			if (btn(SDL_GAMEPAD_BUTTON_DPAD_DOWN) || ly > dead) press(C_DOWN);
+			if (btn(SDL_GAMEPAD_BUTTON_DPAD_LEFT) || lx < -dead) press(C_LEFT);
+			if (btn(SDL_GAMEPAD_BUTTON_DPAD_RIGHT) || lx > dead) press(C_RIGHT);
 			if (back) {
 				// View held: hotkeys on Start, LB and RB, not moves
 				const bool pstart = btn(SDL_GAMEPAD_BUTTON_START);
@@ -240,7 +240,7 @@ hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const playe
 				lb_was[p] = lb; rb_was[p] = rb;
 			} else {
 				for (int a : prof.pad_actions)
-					if (player_controls::pad_down(g, ctl[p].pad[a])) b |= BITS[a];
+					if (player_controls::pad_down(g, ctl[p].pad[a])) press(a);
 				if (start && !st.start_was) press_start();
 				start_held |= start;
 			}
@@ -284,22 +284,37 @@ hotkey read_inputs(model1 &m, SDL_Gamepad *pads[2], pad_state ps[2], const playe
 		m.m_inputs[i] = uint8_t(~in[i]);
 	if (m.real_ioboard()) {
 		const auto &profile = game::get_io_profile(m.title());
+		auto dpad_button = [](int action) {
+			switch (action) {
+			case C_UP: return SDL_GAMEPAD_BUTTON_DPAD_UP;
+			case C_DOWN: return SDL_GAMEPAD_BUTTON_DPAD_DOWN;
+			case C_LEFT: return SDL_GAMEPAD_BUTTON_DPAD_LEFT;
+			case C_RIGHT: return SDL_GAMEPAD_BUTTON_DPAD_RIGHT;
+			default: return SDL_GAMEPAD_BUTTON_INVALID;
+			}
+		};
 		for (size_t channel = 0; channel < profile.analog_controls.size(); channel++) {
 			if (profile.analog_controls[channel].empty()) continue;
-			const uint8_t neutral = profile.analog_neutral[channel];
-			const game::host_axis axis = ctl[0].analog_axis[channel];
-			uint8_t value = axis == game::host_axis::none || !pads[0]
+			const int p = profile.analog_player[channel] ? 1 : 0;
+			SDL_Gamepad *pad = pads[p];
+			// the host's 0-255 (io_profile::analog_port maps it onto the channel's range)
+			const uint8_t neutral = profile.analog_host(channel, profile.analog_neutral[channel]);
+			const game::host_axis axis = ctl[p].analog_axis[channel];
+			uint8_t value = axis == game::host_axis::none || !pad
 				? neutral
-				: player_controls::analog_value(player_controls::axis_value(pads[0], axis),
+				: player_controls::analog_value(player_controls::axis_value(pad, axis),
 												profile.analog_kinds[channel], neutral);
 			for (const auto &k : prof.analog_keys) {
 				if (k.channel != int(channel)) continue;
-				auto dpad = [&](SDL_GamepadButton b) { return k.dpad && pads[0] && SDL_GetGamepadButton(pads[0], b); };
-				const bool low = k.low >= 0 && (key(ctl[0].key[k.low]) || dpad(SDL_GAMEPAD_BUTTON_DPAD_LEFT));
-				const bool high = k.high >= 0 && (key(ctl[0].key[k.high]) || dpad(SDL_GAMEPAD_BUTTON_DPAD_RIGHT));
-				value = game_part.analog_key_input(m, int(channel), low, high, value);
+				auto held = [&](int action) {
+					if (action < 0) return false;
+					if (key(ctl[p].key[action])) return true;
+					const SDL_GamepadButton b = dpad_button(action);
+					return k.dpad && pad && b != SDL_GAMEPAD_BUTTON_INVALID && SDL_GetGamepadButton(pad, b);
+				};
+				value = game_part.analog_key_input(m, int(channel), held(k.low), held(k.high), value);
 			}
-			m.set_analog_input(int(channel), value);
+			m.set_analog_input(int(channel), profile.analog_port(channel, value));
 		}
 	}
 	return hk;
@@ -917,7 +932,7 @@ int main(int argc, char **argv)
 		m.forget_camera();   // (past_boot: this boot's)
 		if (!g_pc_mode) { sync.start(); return; }
 		m.set_drawing(false);
-		for (int i = 0; i < 900 && !m.past_boot(); i++) m.run_frame();
+		for (int i = 0; game::get(host_game()).camera_ram && i < 900 && !m.past_boot(); i++) m.run_frame();
 		m.set_drawing(true);
 		m.m_audio_out.clear();
 		sync.start();
@@ -1773,7 +1788,7 @@ int main(int argc, char **argv)
 	auto keys_page = [&](int p) {
 		menu_page pg{ p ? "Player 2 keyboard" : "Player 1 keyboard", "", {} };
 		for (int a = 0; a < C_COUNT; a++) {
-			if (!controls.visible(a)) continue;
+			if (!controls.visible(a, p)) continue;
 			pg.items.push_back({ controls.label(a), std::string(a == C_COIN ? "A coin for this player in Arcade mode (a cabinet's coin slot). "
 													: a == C_MENU ? "Opens this menu (as Esc always does): for a cabinet's button. " : "") +
 					"Select, then press the key to use. Delete clears it.",
@@ -1803,7 +1818,8 @@ int main(int argc, char **argv)
 	};
 	auto pad_buttons_page = [&](int p) {
 		menu_page pg{ p ? "Player 2 pad buttons" : "Player 1 pad buttons", "", {} };
-		for (int a : controls.pad_actions)
+		for (int a : controls.pad_actions) {
+			if (!controls.visible(a, p)) continue;
 			pg.items.push_back({ controls.label(a), std::string(a == C_COIN ? "A coin for this player in Arcade mode (a cabinet's coin slot). "
 												   : a == C_MENU ? "Opens this menu. L3 + R3 and the touchpad click (when it isn't set to something else) always do too, and Esc on a keyboard. " : "") +
 												   "Select, then press the button (or trigger) to use. Y (or Delete) clears it." +
@@ -1835,6 +1851,7 @@ int main(int argc, char **argv)
 							return true;
 						});
 				}, false, [&, p, a] { cfg.ctl[p].pad[a] = PAD_NONE; cfg_dirty = true; } });
+		}
 		pg.items.push_back(back_item());
 		return pg;
 	};
@@ -1842,7 +1859,7 @@ int main(int argc, char **argv)
 		const auto &profile = game::get_io_profile(m.title());
 		menu_page pg{ p ? "Player 2 analog axes" : "Player 1 analog axes", "", {} };
 		for (size_t channel = 0; channel < profile.analog_controls.size(); channel++) {
-			if (profile.analog_controls[channel].empty()) continue;
+			if (profile.analog_controls[channel].empty() || profile.analog_player[channel] != p) continue;
 			pg.items.push_back({ std::string(profile.analog_controls[channel]),
 				controls.analog_help,
 				[&, p, channel] { return player_controls::axis_label(cfg.ctl[p].analog_axis[channel]); }, {},
@@ -1861,10 +1878,11 @@ int main(int argc, char **argv)
 							if (axis == game::host_axis::none) return false;
 							const bool trigger = axis == game::host_axis::left_trigger || axis == game::host_axis::right_trigger;
 							if (trigger ? e.gaxis.value < 16000 : std::abs(int(e.gaxis.value)) < 16000) return false;
-							for (auto &controls : cfg.ctl)
-								for (size_t other = 0; other < controls.analog_axis.size(); other++)
-									if (&controls == &cfg.ctl[p] && other == channel) continue;
-									else if (controls.analog_axis[other] == axis) controls.analog_axis[other] = game::host_axis::none;
+							// an axis drives one of this player's channels (each player has their own pad)
+							auto &own = cfg.ctl[p];
+							for (size_t other = 0; other < own.analog_axis.size(); other++)
+								if (other != channel && profile.analog_player[other] == p && own.analog_axis[other] == axis)
+									own.analog_axis[other] = game::host_axis::none;
 							cfg.ctl[p].analog_axis[channel] = axis;
 							cfg_dirty = true;
 							return true;
@@ -1882,9 +1900,11 @@ int main(int argc, char **argv)
 		pg.items.push_back({ "Pad buttons", controls.pad_buttons_help,
 							 {}, {}, [&, p] { menu.push(pad_buttons_page(p)); } });
 		const auto &io_profile = game::get_io_profile(m.title());
-		if (std::any_of(io_profile.analog_controls.begin(), io_profile.analog_controls.end(),
-						[](std::string_view name) { return !name.empty(); }) && p == 0)
-			pg.items.push_back({ "Analog axes", "Steering and pedal axes for this game's analog controls.", {}, {},
+		bool has_analog = false;
+		for (size_t channel = 0; channel < io_profile.analog_controls.size(); channel++)
+			has_analog |= !io_profile.analog_controls[channel].empty() && io_profile.analog_player[channel] == p;
+		if (has_analog)
+			pg.items.push_back({ "Analog axes", "Pad axes for this player's analog controls.", {}, {},
 								 [&, p] { menu.push(analog_axes_page(p)); } });
 		pg.items.push_back({ "Reset to defaults", "Put this player's keys and buttons back as they were.", {}, {},
 							 [&, p] {

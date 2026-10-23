@@ -203,6 +203,16 @@ int main(int argc, char **argv)
 			m.tgp_has_hle() ? "HLE simulation" : "no HLE handler";
 		fprintf(stderr, "TGP mode: %s; MB86233 cycles executed: %llu\n",
 			mode, (unsigned long long)m.tgp_cycles_executed());
+		if (m.tgp_is_lle()) {
+			const auto t = m.tgp_status();
+			fprintf(stderr, "TGP FIFO: input %llu/%llu, output %llu/%llu (read/written); "
+							"pending %zu/%zu, peak %zu/%zu, waits %llu/%llu, sync limits %llu, pc %03x%s\n",
+				(unsigned long long)t.input_read, (unsigned long long)t.input_written,
+				(unsigned long long)t.output_read, (unsigned long long)t.output_written,
+				t.input_pending, t.output_pending, t.input_peak, t.output_peak,
+				(unsigned long long)t.input_waits, (unsigned long long)t.output_waits,
+				(unsigned long long)t.sync_limits, t.pc, t.waiting ? " (waiting for input)" : "");
+		}
 	}
 	double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 	fprintf(stderr, "%d frames in %.2fs (%.0f fps)\n", frames, s, frames / s);

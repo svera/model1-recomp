@@ -1,0 +1,111 @@
+#include "../../../src/games/swa/controls.h"
+#include "../../../src/machine/model1.h"
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <set>
+
+int main()
+{
+	using namespace game::swa;
+	assert(game::find("swa") == ID);
+	const auto &p = game::get(ID);
+	assert(p.display_name == "Star Wars Arcade");
+	assert(p.romset == "swa");
+	assert(p.recompiler_map == "games/swa/swa_map.txt");
+	assert(!p.camera_ram && !p.mode_ram);
+	assert(p.cpu_cycles_per_instruction == 8);
+	const auto &io = game::get_io_profile(ID);
+	assert(io.digital_controls[4] == "Start");
+	assert(io.digital_controls[5].empty());   // Start 2: wired in MAME, never read
+	assert(io.digital_controls[8] == "Pilot Laser" && io.digital_controls[9] == "Pilot Torpedo");
+	assert(io.digital_controls[10] == "Gunner Laser" && io.digital_controls[11] == "Gunner Torpedo");
+	assert(io.digital_controls[12] == "Pilot VR Button");
+	for (int channel : { 3, 6, 7 }) {
+		assert(io.analog_controls[channel].empty());
+		assert(io.analog_neutral[channel] == 0xff);
+	}
+	// calibrated ranges: full host travel is the factory calibration's +-100, neutral its 0
+	for (int channel : { 0, 1, 4, 5 }) {
+		assert(!io.analog_controls[channel].empty());
+		assert(io.analog_kinds[channel] == game::analog_kind::centered);
+		assert(io.analog_neutral[channel] == 127);
+		const bool x = channel == 0 || channel == 4;
+		assert(io.analog_port(channel, 0) == (x ? 227 : 27));     // left / forward
+		assert(io.analog_port(channel, 255) == (x ? 27 : 227));   // right / back
+		assert(io.analog_port(channel, io.analog_host(channel, 127)) == 127);
+	}
+	assert(io.analog_port(2, 0) == 28 && io.analog_port(2, 255) == 228);   // fast / slow
+	assert(io.analog_neutral[2] == 128 && io.analog_port(2, io.analog_host(2, 128)) == 128);
+	for (int v = 0; v < 256; v++)
+		for (int channel : { 0, 1, 2, 4, 5 }) {
+			const uint8_t port = io.analog_port(channel, uint8_t(v));
+			assert(port >= 27 && port <= 228);
+			assert(std::abs(int(io.analog_host(channel, port)) - v) <= 1);
+			if (v) assert(io.analog_ranges[channel].reverse ? port <= io.analog_port(channel, uint8_t(v - 1))
+															 : port >= io.analog_port(channel, uint8_t(v - 1)));
+		}
+	assert(io.analog_host(0, 0) == 255 && io.analog_host(1, 255) == 255);   // clamped outside the range
+	for (int channel : { 0, 1, 2 }) assert(io.analog_player[channel] == 0);
+	for (int channel : { 4, 5 }) assert(io.analog_player[channel] == 1);
+	assert(io.host_axis_defaults[0] == game::host_axis::left_x && io.host_axis_defaults[1] == game::host_axis::left_y);
+	assert(io.host_axis_defaults[2] == game::host_axis::right_y);
+	assert(io.host_axis_defaults[4] == game::host_axis::left_x && io.host_axis_defaults[5] == game::host_axis::left_y);
+	// other games keep the identity mapping
+	const auto &vr = game::get_io_profile(*game::find("vr"));
+	for (int v = 0; v < 256; v++) assert(vr.analog_port(0, uint8_t(v)) == v && vr.analog_host(0, uint8_t(v)) == v);
+	assert(vr.analog_player[1] == 0);
+
+	// buttons: both seats on the player 1 byte, the Gunner's on its own bits
+	auto pressed = [](int player, int action) {
+		uint8_t in[3] = { 0, 0, 0 };
+		CONTROLS.press(in, player, action);
+		assert(in[0] == 0 && in[2] == 0);
+		return in[1];
+	};
+	assert(pressed(0, C_LASER) == PILOT_LASER && pressed(0, C_TORPEDO) == PILOT_TORPEDO);
+	assert(pressed(0, C_VIEW) == PILOT_VIEW);
+	assert(pressed(1, C_LASER) == GUNNER_LASER && pressed(1, C_TORPEDO) == GUNNER_TORPEDO);
+	assert(pressed(1, C_VIEW) == 0);
+	for (int a : { int(C_UP), int(C_DOWN), int(C_LEFT), int(C_RIGHT), int(C_THROTTLE_UP), int(C_THROTTLE_DOWN) })
+		assert(pressed(0, a) == 0 && pressed(1, a) == 0);   // analog only
+	assert(CONTROLS.start_bits[0] == START && CONTROLS.start_bits[1] == START);
+	assert(CONTROLS.visible(C_VIEW, 0) && !CONTROLS.visible(C_VIEW, 1));
+	assert(CONTROLS.visible(C_THROTTLE_UP, 0) && !CONTROLS.visible(C_THROTTLE_UP, 1));
+	assert(CONTROLS.visible(C_LASER, 1) && CONTROLS.visible(C_TORPEDO, 1) && CONTROLS.visible(C_START, 1));
+	for (int a : CONTROLS.pad_actions) assert(CONTROLS.visible(a));
+	// every analog channel has keys; the sticks the d-pad too
+	for (int channel : { 0, 1, 2, 4, 5 }) {
+		int n = 0;
+		for (const auto &k : CONTROLS.analog_keys)
+			if (k.channel == channel) { n++; assert(k.low >= 0 && k.high >= 0 && k.dpad == (channel != 2)); }
+		assert(n == 1);
+	}
+	// no key does two things for one player, nor is shared between them
+	std::set<SDL_Scancode> used;
+	for (int p = 0; p < 2; p++)
+		for (int a = 0; a < C_COUNT; a++)
+			if (CONTROLS.visible(a, p) && CONTROLS.keys[p][a]) assert(used.insert(CONTROLS.keys[p][a]).second);
+	assert(!game::get_video(ID).smooth_frames);
+	assert(!game::get_video(ID).pin_hud_edges);
+
+	model1::regions regions;
+	regions.title = ID;
+	regions.maincpu.resize(0x2000000, 0xff);
+	regions.copro_tables.resize(0x40000);
+	regions.polygons.resize(0xc00000);
+	model1 m(std::move(regions));
+	m.work_ram()[0] = 0x12;
+	m.work_ram()[1] = 0x34;
+	m.work_ram()[2] = 0x56;
+	m.work_ram()[3] = 0x78;
+	assert(!m.tgp_has_hle());
+	assert(m.camera() == 0);
+	assert(m.game_mode() == 0);
+	assert(!m.past_boot());
+	assert(!m.in_test_menu_mode());
+	m.forget_camera();
+	assert(m.work_ram()[0] == 0x12 && m.work_ram()[1] == 0x34);
+	assert(m.work_ram()[2] == 0x56 && m.work_ram()[3] == 0x78);
+	puts("SWA: profile, controls, I/O layout, analog calibration and unset camera/mode RAM checks passed");
+}

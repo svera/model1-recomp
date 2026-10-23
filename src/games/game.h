@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -32,9 +33,10 @@ struct profile
 	std::string_view recompiler_map;
 	std::string_view make_regions;   // how a development build gets the regions (src/host/regions.h)
 	// work RAM (0x500000 on) the shared code reads: the camera pointer the game last sent (0 between
-	// scenes, and until the boot's over), and the game's mode byte, test_menu_mode in its test menu
-	uint32_t camera_ram;
-	uint32_t mode_ram;
+	// scenes, and until the boot's over), and the game's mode byte, test_menu_mode in its test menu.
+	// Unset until the game's RAM layout is known.
+	std::optional<uint32_t> camera_ram;
+	std::optional<uint32_t> mode_ram;
 	uint8_t test_menu_mode;
 	// The V60's average cycles per instruction (the cores charge MAME's estimate of 8 each).
 	double cpu_cycles_per_instruction = 8;
@@ -46,10 +48,31 @@ struct io_profile
 	std::array<std::string_view, 24> digital_controls;
 	// ADC channels 0-7; the I/O board's secondary switch selects channels 4-7.
 	std::array<std::string_view, 8> analog_controls;
-	std::array<std::string_view, 8> analog_environment;
-	std::array<uint8_t, 8> analog_neutral;
+	std::array<std::string_view, 8> analog_environment;   // raw port values (tools/model1run)
+	std::array<uint8_t, 8> analog_neutral;                 // raw port value at rest
 	std::array<host_axis, 8> host_axis_defaults;
 	std::array<analog_kind, 8> analog_kinds;
+	// The host reads a channel as 0 (stick left/forward, key `low`) to 255 (right/back, key `high`),
+	// then maps it onto the cabinet's calibrated range, reversed where the hardware counts the other way.
+	struct analog_range { uint8_t low = 0, high = 255; bool reverse = false; };
+	std::array<analog_range, 8> analog_ranges{};
+	std::array<uint8_t, 8> analog_player{};                // whose pad and keys drive the channel (0, 1)
+
+	uint8_t analog_port(size_t channel, uint8_t host) const
+	{
+		const analog_range &r = analog_ranges[channel];
+		const int value = r.low + (host * (r.high - r.low) + 127) / 255;
+		return uint8_t(r.reverse ? r.low + r.high - value : value);
+	}
+	uint8_t analog_host(size_t channel, uint8_t port) const
+	{
+		const analog_range &r = analog_ranges[channel];
+		const int span = r.high - r.low;
+		if (span <= 0) return 0;
+		int value = std::clamp(int(port), int(r.low), int(r.high));
+		if (r.reverse) value = r.low + r.high - value;
+		return uint8_t(((value - r.low) * 255 + span / 2) / span);
+	}
 };
 
 struct tgp_hle_callbacks

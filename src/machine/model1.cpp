@@ -238,6 +238,8 @@ void model1::uart_tick(int cycles)
 void model1::enable_sound()
 {
 	m_audio = std::make_unique<m1audio>(m_regions.sndcpu, m_regions.pcm1, m_regions.pcm2);
+	if (!m_regions.mpegcpu.empty() && !m_regions.mpeg.empty())
+		m_audio->attach_dsb(m_regions.mpegcpu, m_regions.mpeg);
 	m_audio->reset();
 }
 
@@ -524,8 +526,7 @@ void model1::redraw()
 
 bool model1::past_boot() const
 {
-	const uint8_t *p = &m_ram_b[m_profile->camera_ram];
-	return (p[0] | p[1] << 8 | p[2] << 16 | uint32_t(p[3]) << 24) != 0;
+	return camera() != 0;
 }
 
 // A layer at the arcade's resolution (and the widescreen sides), drawn once a game frame, with each

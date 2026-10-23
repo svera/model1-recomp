@@ -437,7 +437,7 @@ void model1::keep_still()
 	std::copy(std::begin(m_view->lightparams), std::end(m_view->lightparams), s.lightparams.begin());
 	s.light = m_view->light;
 	s.spec_enable = m_view->spec_enable;
-	memcpy(s.camera, &m_ram_b[m_profile->camera_ram], 4);
+	if (m_profile->camera_ram) memcpy(s.camera, &m_ram_b[*m_profile->camera_ram], 4);
 	s.camera_wide = m_camera_wide;
 	s.sky_now = m_sky_now; s.sky_last = m_sky_last;
 	s.sky_base = m_sky_base; s.sky_last_tx0 = m_sky_last_tx0;
@@ -463,7 +463,8 @@ void model1::swap_still()
 	std::swap_ranges(std::begin(m_view->lightparams), std::end(m_view->lightparams), s.lightparams.begin());
 	std::swap(m_view->light, s.light);
 	std::swap(m_view->spec_enable, s.spec_enable);
-	std::swap_ranges(&m_ram_b[m_profile->camera_ram], &m_ram_b[m_profile->camera_ram + 4], s.camera);   // (the camera pointer: work RAM, put back after)
+	if (m_profile->camera_ram)
+		std::swap_ranges(&m_ram_b[*m_profile->camera_ram], &m_ram_b[*m_profile->camera_ram + 4], s.camera);
 	std::swap(m_camera_wide, s.camera_wide);
 	std::swap(m_sky_now, s.sky_now); std::swap(m_sky_last, s.sky_last);
 	std::swap(m_sky_base, s.sky_base); std::swap(m_sky_last_tx0, s.sky_last_tx0);
