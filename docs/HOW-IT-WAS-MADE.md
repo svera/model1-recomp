@@ -349,6 +349,39 @@ with smooth motion on and off: every course-table object must be submitted exact
 objects from cells skipped by the arcade's budget. This is an automated coverage check, not visual
 verification.
 
+Animated trackside props have separate visibility checks. Full distance overrides reads of
+`501AA0..501ABC` at the render-only checks `FFD77A`, `FFD928`, `FFDABA` and `FFC1B2` (flags).
+Windmills (`FFB769`), animated start/goal banners (`FFB0EB`), roadside light poles (`FFAAC4`)
+the building beside the windmill (`FFB679`) and palm trees (`FFDC4D`) instead use `501AC0..501ADC`.
+These routines also check collisions: their newly admitted, originally invisible instances
+receive a far result only for those collision queries (`FFB797`, `FFB19D`, `FFB1BD`, `FFAAED`,
+`FFB6A7`, `FFDC94`), so extending
+their drawing does not enable distant collisions. Originally visible instances keep their real
+results. Scene-enable checks, stored masks, stored budgets and object command sizes are unchanged.
+Only these props' drawing calls bypass the submission-budget comparison, even with LOD On.
+Each part's matrix is attributed to its R25 record rather than a stale car record for smooth motion.
+
+`build/bin/model1_video_test build/vr --attract-scenery` runs 6,000 attract frames per configuration
+on the interpreter and native backend, covering both distance settings and smooth/detail modes.
+The original three-part check at `FFD928` covers the large wheel, not the windmills; checking its
+submissions alone missed the windmill and banner culling. The expanded regression checks actual
+pixels from windmills, banners, flags, light poles, palms and the windmill's neighboring building beyond
+their original visibility masks, including 84
+rear-facing distant-banner samples with smooth motion. It also compares all 16 cars' positions,
+speed, progress and collision state at 2,859 matched simulation updates; partial CPU updates at
+video-frame boundaries are deliberately not compared. Full draws both windmill parts on all
+990 calls, including 821 outside the original mask. Light poles remain submitted on all 12,608
+calls (11,164 outside the mask), and the neighboring building on all 990 calls (821 outside).
+The smooth checks detect visible distant poles in 62 pixel samples and the building in nine.
+Palms remain submitted on all 20,790 calls (18,415 outside their original mask), with visible
+distant palms in 122 smooth pixel samples and 121 with smooth motion off. Their collision
+query retains its real result inside the original mask; outside it the non-hit result prevents
+new impacts, crash sounds and detached fronds. All five palm drawing calls bypass the submission
+budget in Full mode, including the existing impact-animation parts. Arcade mode is unchanged.
+Static coverage is checked against
+the course table captured when its list was written, not the next scene's table during camera cuts.
+The smooth Full runs retain every static course object across all 2,186 scenery lists.
+
 The initial 7x7 implementation was validated with the gameplay regression, which checks boundaries and masks,
 then compares actual rendered polygon counts at matching cameras using local ROMs on the interpreter and native
 runner. In the 6,000-frame Beginner run, 2,361 matching-camera frames draw more geometry, with up to 1,589 extra

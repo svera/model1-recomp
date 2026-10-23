@@ -22,13 +22,23 @@ The macOS preview is not notarized; if Gatekeeper blocks it, Control-click the a
 then confirm. Windows may show SmartScreen for the same reason.
 
 CONTROLS
+These are the defaults for a new configuration. Saved bindings in settings.ini take
+precedence and are kept when you update the app. An existing setup may still use
+D-pad Up/Down for shifting.
 Open the menu with Esc or View/Select, then Controls > Player 1. Keyboard: Left/Right steer,
-Up accelerates, Down brakes, X/Z shift up/down, C cycles the four cameras. Gamepad: left stick X
+Up accelerates, Down brakes, X/Z shift up/down, C cycles the four cameras, 1 starts,
+and 5 inserts a coin. Gamepad: left stick X
 steers, right trigger accelerates, left trigger brakes, A / Cross shifts up, B / Circle
 shifts down, Y / Triangle cycles cameras, and D-pad Up inserts a coin in Arcade mode.
-The same bindings can be changed there; the game starts with
-the configured Start control.
+To see or change your actual controller bindings, open Controls > Player 1 > Pad buttons.
+Check Coin for your Insert Coin button; the default is D-pad Up. Coins are only needed
+in Arcade play style. The game starts with the configured Start control.
+Controllers can be connected or reconnected during play, including over Bluetooth.
+Allow about a second after the system connects it. Set Controls > Player 1 > Pad to
+Any pad or your controller rather than None to enable it.
 For manual transmission, hold Start on the course selection screen while confirming with Accelerator.
+To choose a course with the keyboard, hold Left/Right to move gradually, release on the
+course you want, then press Accelerator to confirm.
 
 Display settings, antialiasing, sound, and saves are available from the menu. All wide picture
 shapes, including 16:9 and 16:10, widen the view without stretching the HUD. Off-center HUD

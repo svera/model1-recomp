@@ -1,11 +1,48 @@
 #include "../../../src/games/game.h"
 #include "../../../src/games/vr/controls.h"
+#include "../../../src/games/script.h"
+#include "../../../src/host/regions.h"
+#include "../../../src/machine/model1.h"
 #include <string>
 #include <cassert>
 
-int main()
+static void keyboard_medium(const char *dir)
 {
-	game::vr::initials_steering wheel;
+	model1 m(load_regions(dir, game::vr::ID));
+	m.set_smooth(false);
+	m.reset();
+	game::vr::menu_steering wheel;
+	auto play = game::make_auto_play(game::vr::ID, "intermediate", 12345, true);
+	assert(play);
+	int held = 0, released = 0;
+	bool raced = false;
+	for (int f = 1; f <= 4500; f++) {
+		const auto input = play->frame(f);
+		const bool selecting = m.work_ram()[0x1138] == 0x10 && m.camera() == 0x502150;
+		const bool right = selecting && held < 48;
+		const uint8_t value = wheel.update(selecting, false, right, 0x80);
+		if (right) held++;
+		else if (selecting && held == 48) {
+			assert(value == 0xb0);
+			released++;
+		}
+		assert(m.set_analog_input(0, value));
+		for (int c = 1; c < 3; c++)
+			if (input.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(input.analog[c])));
+		for (int c = 0; c < 3; c++) m.m_inputs[c] = uint8_t(~input.pressed[c]);
+		m.run_frame();
+		const auto error = play->check(f, m);
+		if (!error.empty()) fprintf(stderr, "%s\n", error.c_str());
+		assert(error.empty());
+		if (m.work_ram()[0x1138] == 0x14) raced = true;
+	}
+	assert(held == 48 && released > 10 && raced);
+	printf("VR keyboard: Medium selected with Right, retained on release, and confirmed into race\n");
+}
+
+int main(int argc, char **argv)
+{
+	game::vr::menu_steering wheel;
 	assert(wheel.update(false, true, false, 128) == 0);
 	assert(wheel.update(false, false, true, 128) == 255);
 	assert(wheel.update(false, false, false, 128) == 128);
@@ -27,6 +64,7 @@ int main()
 	assert(wheel.update(false, false, false, 128) == 128);
 	assert(wheel.update(true, false, false, 128) == 128);
 	assert(wheel.update(true, true, false, 128) == 127);
+	if (argc > 1) keyboard_medium(argv[1]);
 
 	const auto &vr = game::get(game::vr::ID);
 	assert(vr.title.name == "vr");

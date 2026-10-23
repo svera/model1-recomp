@@ -149,13 +149,44 @@ gameplay_callbacks create_gameplay(model1 &machine)
 			prepare_scenery(machine, *state);
 	};
 	callbacks.matrix_objects = [&machine, state] { return scenery_objects(machine, *state); };
-	callbacks.copro_result = [state](uint32_t pc, uint32_t value) {
+	callbacks.copro_result = [&machine, state](uint32_t pc, uint32_t value) {
+		// Full-distance props must retain the arcade's collision visibility.
+		if (state->extended_draw_distance &&
+			(pc == 0xffb19d || pc == 0xffb1bd || pc == 0xffb797 || pc == 0xffaaed ||
+			 pc == 0xffb6a7 || pc == 0xffdc94)) {
+			const uint32_t cell = machine.read16(machine.cpu().reg(25) + 0x34);
+			if (cell >= 256) {
+				fprintf(stderr, "VR draw distance: invalid animated scenery cell %u\n", cell);
+				std::abort();
+			}
+			if (!(machine.read32(0x501ac0 + cell / 32 * 4) & (1u << (cell % 32))))
+				return std::bit_cast<uint32_t>(10000.0f);
+		}
 		return std::bit_cast<uint32_t>(lod_distance(state->lod, pc, std::bit_cast<float>(value)));
 	};
 	callbacks.read32_watch = 0x5011b0;
-	callbacks.read32_value = [state](uint32_t pc, uint32_t value) {
+	callbacks.read32_watch_end = 0x501adc;
+	callbacks.read32_value = [&machine, state](uint32_t pc, uint32_t address, uint32_t value) {
 		// More detailed cars must not exhaust the arcade's submission budget.
-		if (!state->lod && (pc == 0xff848a || pc == 0xff84a2)) return 0x7fffffffu;
+		if (address == 0x5011b0 && (pc == 0xff848a || pc == 0xff84a2)) {
+			if (!state->lod) return 0x7fffffffu;
+			if (state->extended_draw_distance) {
+				const uint32_t caller = machine.read32(machine.cpu().reg(31));
+				if (caller == 0xffd809 || caller == 0xffd85a || caller == 0xffd9e8 ||
+					caller == 0xffda21 || caller == 0xffda67 || caller == 0xffdb49 ||
+					caller == 0xffdb9a || caller == 0xffdbd5 || caller == 0xffb254 ||
+					caller == 0xffb81c || caller == 0xffb859 || caller == 0xffc235 ||
+					caller == 0xffc251 || caller == 0xffab97 || caller == 0xffb72c ||
+					caller == 0xffddd4 || caller == 0xffddeb || caller == 0xffde6e ||
+					caller == 0xffdedc || caller == 0xffdf42) return 0x7fffffffu;
+			}
+		}
+		// Render-only scenery and flags use the narrow mask; collidable props use the wider one.
+		if (state->extended_draw_distance && address >= 0x501aa0 && address <= 0x501abc &&
+			(pc == 0xffd77a || pc == 0xffd928 || pc == 0xffdaba || pc == 0xffc1b2)) return 0xffffffffu;
+		if (state->extended_draw_distance && address >= 0x501ac0 && address <= 0x501adc &&
+			(pc == 0xffb0eb || pc == 0xffb769 || pc == 0xffaac4 || pc == 0xffb679 ||
+			 pc == 0xffdc4d)) return 0xffffffffu;
 		return value;
 	};
 	callbacks.object = [&machine, state](uint32_t owner, uint32_t, uint32_t polygon, uint32_t, const float *) {

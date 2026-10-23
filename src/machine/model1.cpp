@@ -443,8 +443,9 @@ void model1::write16(uint32_t a, uint16_t v)
 uint32_t model1::read32(uint32_t a)
 {
 	const uint32_t value = read16(a) | (uint32_t(read16(a + 2)) << 16);
-	if (a == m_gameplay.read32_watch && m_gameplay.read32_value)
-		return m_gameplay.read32_value(m_maincpu.pc(), value);
+	if (a >= m_gameplay.read32_watch && a <= std::max(m_gameplay.read32_watch, m_gameplay.read32_watch_end) &&
+		m_gameplay.read32_value)
+		return m_gameplay.read32_value(m_maincpu.pc(), a, value);
 	return value;
 }
 void model1::write32(uint32_t a, uint32_t v) { write16(a, uint16_t(v)); write16(a + 2, uint16_t(v >> 16)); }

@@ -12,12 +12,12 @@ enum : uint8_t { SHIFT_DOWN = 0x10, SHIFT_UP = 0x20 };   // player 1's input byt
 enum : int { C_ACCELERATOR = C_BUTTON_1, C_BRAKE, C_CAMERA };
 inline constexpr uint8_t CAMERA_CYCLE_INPUT = 0x40;   // Host-only action, consumed before I/O.
 
-class initials_steering
+class menu_steering
 {
 public:
-	uint8_t update(bool entering_initials, bool left, bool right, uint8_t analog)
+	uint8_t update(bool selecting, bool left, bool right, uint8_t analog)
 	{
-		if (!entering_initials) {
+		if (!selecting) {
 			active = false;
 			return left != right ? (left ? 0 : 255) : analog;
 		}
@@ -71,7 +71,7 @@ inline const control_profile CONTROLS = [] {
 	c.renamed_keys = { { C_UP, "up", SDL_SCANCODE_UP, SDL_SCANCODE_X }, { C_DOWN, "down", SDL_SCANCODE_DOWN, SDL_SCANCODE_Z } };
 	c.analog_keys = { { 0, C_LEFT, C_RIGHT, true }, { 1, -1, C_ACCELERATOR, false }, { 2, -1, C_BRAKE, false } };
 	c.pad_buttons_help = "Change the shift, camera, start, coin and menu buttons.";
-	c.analog_help = "For a pad, select and move a stick axis or squeeze a trigger. The keyboard also has separate steering, accelerator and brake keys. During initials entry, hold Left/Right to move gradually, release to keep the selection, and press Accelerator to confirm.";
+	c.analog_help = "For a pad, select and move a stick axis or squeeze a trigger. The keyboard also has separate steering, accelerator and brake keys. On course selection and initials entry, hold Left/Right to move gradually, release to keep the selection, and press Accelerator to confirm.";
 	return c;
 }();
 

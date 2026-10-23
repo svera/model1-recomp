@@ -27,6 +27,7 @@ jobs:
       - name: Run tests
         run: |
           make -j3 \
+            test-host-gamepads \
             test-mb86233 \
             test-model1io-adc \
             test-model1-sky \

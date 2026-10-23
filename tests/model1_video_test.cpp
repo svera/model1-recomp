@@ -9,10 +9,259 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <cstdio>
+#include <map>
 #include <set>
 
 struct model1_video_test
 {
+	static void trackside_collisions()
+	{
+		model1::regions regions;
+		regions.title = game::id{ "vr" };
+		model1 m(std::move(regions));
+		m.cpu().set_reg(25, 0x407900);
+		for (bool full : { false, true }) {
+			game::vr::set_extended_draw_distance(m, full);
+			for (int cell = 0; cell < 256; cell++) {
+				m.write16(0x407934, cell);
+				for (bool visible : { false, true }) {
+					const uint32_t mask = visible ? 1u << (cell % 32) : 0;
+					m.write32(0x501ac0 + cell / 32 * 4, mask);
+					for (uint32_t pc : { 0xffb19du, 0xffb1bdu, 0xffb797u, 0xffb6a7u, 0xffaaedu,
+						0xffdc94u, 0xffdc4du, 0u })
+						for (float distance : { -1000.0f, -1.0f, 0.0f, 1.0f, 1000.0f }) {
+							const bool added_query = pc == 0xffb19d || pc == 0xffb1bd || pc == 0xffb797 ||
+								pc == 0xffb6a7 || pc == 0xffaaed || pc == 0xffdc94;
+							const uint32_t value = std::bit_cast<uint32_t>(distance);
+							const uint32_t expected = std::bit_cast<uint32_t>(full && !visible && added_query ? 10000.0f : distance);
+							assert(m.m_gameplay.copro_result(pc, value) == expected);
+							assert(m.read32(0x501ac0 + cell / 32 * 4) == mask);
+						}
+				}
+			}
+		}
+	}
+
+	static void trackside_distance(const char *dir, bool native, bool smooth = true, bool lod = true)
+	{
+		model1 arcade(load_regions(dir, game::id{ "vr" })), full(load_regions(dir, game::id{ "vr" }));
+		for (model1 *m : { &arcade, &full }) {
+			m->set_smooth(smooth);
+			game::vr::set_lod(*m, lod);
+			m->reset();
+		}
+		game::vr::set_extended_draw_distance(arcade, false);
+		if (native) {
+			rec::hints map;
+			assert(map.read("assets/games/vr/vr_map.txt"));
+			rec::attach(full.cpu(), "vr");
+			assert(rec::build_native(full.program_rom(), map));
+			full.run_cpu = [](int n) { rec::run(n); };
+		}
+		std::array<int, 6> calls{}, outside{}, writes{}, pixels{};
+		std::array<std::vector<std::vector<uint32_t>>, 2> simulation;
+		int sim_index = 0;
+		for (model1 *m : { &arcade, &full }) {
+			const int index = sim_index++;
+			const auto written = m->m_gameplay.work_ram_written;
+			m->m_gameplay.work_ram_written = [&, m, index, written](uint16_t mask) {
+				written(mask);
+				if (!(mask & 0xff) || m->cpu().pc() != 0xff7dc5) return;
+				auto &snapshot = simulation[index].emplace_back();
+				for (uint32_t car = 0x400d00; car < 0x403500; car += 0x280)
+					for (uint32_t field : { 0x1eu, 0x22u, 0x26u, 0x30u, 0x3cu, 0x44u, 0x191u, 0x1abu })
+						snapshot.push_back(m->read32(car + field));
+			};
+		}
+		std::array<std::set<uint32_t>, 6> polygons;
+		polygons[3].insert(full.read32(0x2e03e0));
+		polygons[4].insert(full.read32(0x2e00f0));
+		for (int i = 0; i < 128; i++)
+			polygons[5].insert(full.read32(full.read32(0xfd8e61 + i * 4)));
+		for (uint32_t list : { 0x2e00d0u, 0x2e00e0u }) polygons[0].insert(full.read32(list));
+		for (uint32_t table : { 0xfdc033u, 0xfdc0b3u, 0xfdc133u, 0xfdc1b3u, 0xfdc233u })
+			for (int i = 0; i < 32; i++) polygons[1].insert(full.read32(full.read32(table + i * 4)));
+		polygons[2].insert(full.read32(0x2e01c0));
+		for (uint32_t table = 0xfd9fc3; table <= 0xfda4c3; table += 0x80)
+			for (int i = 0; i < 32; i++) polygons[2].insert(full.read32(full.read32(table + i * 4)));
+		const auto read = full.m_gameplay.read32_value;
+		full.m_gameplay.read32_value = [&](uint32_t pc, uint32_t address, uint32_t value) {
+			const int type = pc == 0xffb769 ? 0 : pc == 0xffb0eb ? 1 : pc == 0xffc1b2 ? 2 :
+				pc == 0xffaac4 ? 3 : pc == 0xffb679 ? 4 : pc == 0xffdc4d ? 5 : -1;
+			const uint32_t result = read(pc, address, value);
+			if (type >= 0) {
+				const uint32_t cell = full.read16(full.cpu().reg(25) + 0x34);
+				assert(cell < 256 && result == 0xffffffff);
+				calls[type]++;
+				if (!(value & (1u << (cell % 32)))) outside[type]++;
+			}
+			return result;
+		};
+		const auto matrix = full.m_gameplay.matrix_objects;
+		full.m_gameplay.matrix_objects = [&] {
+			if (full.cpu().pc() == 0xff8500) {
+				const uint32_t caller = full.read32(full.cpu().reg(31));
+				if (caller == 0xffb81c || caller == 0xffb859) writes[0]++;
+				if (caller == 0xffb254) writes[1]++;
+				if (caller == 0xffc235 || caller == 0xffc251) writes[2]++;
+				if (caller == 0xffab97) writes[3]++;
+				if (caller == 0xffb72c) writes[4]++;
+				if (caller == 0xffddd4 || caller == 0xffddeb) writes[5]++;
+			}
+			return matrix();
+		};
+		const auto object = full.m_gameplay.object;
+		size_t compared = 0;
+		int rear_banner_pixels = 0;
+		for (int f = 1; f <= 6000; f++) {
+			arcade.run_frame();
+			full.run_frame();
+			const size_t common = std::min(simulation[0].size(), simulation[1].size());
+			while (compared < common) {
+				if (simulation[0][compared] != simulation[1][compared])
+					printf("Simulation difference f=%d snapshot=%zu\n", f, compared);
+				assert(simulation[0][compared] == simulation[1][compared]);
+				compared++;
+			}
+			if (f % 4 != 1 || (smooth && full.m_logic[1].frame != f - 1)) continue;
+			bool rear = false;
+			if (smooth) {
+				const auto &a = full.m_logic[0], &b = full.m_logic[1];
+				if (a.has_camera && b.has_camera) {
+					auto eye = [](const std::array<float, 12> &m) {
+						const glm::mat3 rotation(glm::vec3(m[0], m[1], m[2]), glm::vec3(m[3], m[4], m[5]), glm::vec3(m[6], m[7], m[8]));
+						return -glm::transpose(rotation) * glm::vec3(m[9], m[10], m[11]);
+					};
+					const glm::vec3 move = eye(b.camera) - eye(a.camera);
+					const glm::vec3 forward(b.camera[2], b.camera[5], b.camera[8]);
+					const float distance = glm::length(move);
+					rear = distance > .05f && distance < 8 && glm::dot(forward, move) < -.5f * distance;
+				}
+				full.render_smooth(double(full.frame_number()) - .5);
+			}
+			const size_t n = size_t(full.frame_w()) * full.frame_h();
+			const std::vector<uint32_t> picture(full.frame().data(), full.frame().data() + n);
+			for (int type = 0; type < 6; type++) {
+				full.m_gameplay.object = [&](uint32_t owner, uint32_t texture, uint32_t polygon, uint32_t size, const float *data) {
+					auto effect = object(owner, texture, polygon, size, data);
+					if (polygons[type].count(polygon)) {
+						assert(owner >= 0x400000 && owner < 0x410000);
+						const uint32_t cell = full.read16(owner + 0x34);
+						assert(cell < 256);
+						const uint32_t mask = type == 2 ? 0x501aa0 : 0x501ac0;
+						effect.hidden = !(full.read32(mask + cell / 32 * 4) & (1u << (cell % 32)));
+					}
+					return effect;
+				};
+				full.redraw();
+				int changed = 0;
+				for (size_t i = 0; i < n; i++) if (picture[i] != full.frame().data()[i]) changed++;
+				if (changed > 4) pixels[type]++;
+				if (type == 1 && changed > 4 && rear) rear_banner_pixels++;
+			}
+			full.m_gameplay.object = object;
+		}
+		printf("Matched simulation updates: %zu; rear-facing distant banner pixel samples: %d\n", compared, rear_banner_pixels);
+		assert(compared > 2000);
+		if (smooth) assert(rear_banner_pixels > 5);
+		for (int type = 0; type < 6; type++) {
+			printf("Trackside %s (%s): %d calls, %d outside, %d part writes, %d distant pixel samples; car simulation unchanged\n",
+				type == 0 ? "windmill" : type == 1 ? "banner" : type == 2 ? "flag" :
+					type == 3 ? "light pole" : type == 4 ? "windmill building" : "palm",
+				native ? "native" : "interpreter",
+				calls[type], outside[type], writes[type], pixels[type]);
+			assert(calls[type] > 100 && outside[type] > 100 && pixels[type] > 5);
+			assert(writes[type] == calls[type] * (type == 0 || type == 2 ? 4 : 2));
+		}
+	}
+
+	static void attract_scenery(const char *dir, bool full, bool smooth, bool lod, bool native)
+	{
+		model1 m(load_regions(dir, game::id{ "vr" }));
+		if (native) {
+			rec::hints map;
+			assert(map.read("assets/games/vr/vr_map.txt"));
+			rec::attach(m.cpu(), "vr");
+			assert(rec::build_native(m.program_rom(), map));
+			m.run_cpu = [](int n) { rec::run(n); };
+		}
+		m.set_smooth(smooth);
+		game::vr::set_extended_draw_distance(m, full);
+		game::vr::set_lod(m, lod);
+		m.reset();
+		int checks = 0, wheels = 0, culled = 0, active = 0, parts = 0, outside = 0;
+		std::map<std::vector<uint32_t>, std::set<uint32_t>> expected;
+		const auto read32_value = m.m_gameplay.read32_value;
+		m.m_gameplay.read32_value = [&](uint32_t pc, uint32_t address, uint32_t value) {
+			const uint32_t result = read32_value(pc, address, value);
+			if (pc == 0xffd928 && address >= 0x501aa0 && address <= 0x501abc) {
+				wheels++;
+				const uint32_t bit = 1u << (m.read16(m.cpu().reg(25) + 0x34) % 32);
+				if (!(value & bit)) outside++;
+				if (!(result & bit)) culled++;
+				else if (m.read8(0x501a35)) active++;
+			}
+			return result;
+		};
+		const auto matrix_objects = m.m_gameplay.matrix_objects;
+		m.m_gameplay.matrix_objects = [&] {
+			auto extra = matrix_objects();
+			if (m.cpu().pc() == 0xff8500) {
+				const uint32_t caller = m.read32(m.cpu().reg(31));
+				if (caller == 0xffd9e8 || caller == 0xffda21 || caller == 0xffda67) parts++;
+			}
+			if (extra.empty()) return extra;
+			std::vector<uint32_t> key;
+			for (const auto &o : extra) key.push_back(o.polygon);
+			auto &objects = expected[key];
+			const uint32_t table = m.read32(0x501948);
+			for (int cell = 0; cell < 256; cell++) {
+				uint32_t record = m.read32(table + cell * 4);
+				if (!record || record == 0xffffffff) continue;
+				for (int n = 0; m.read32(record); n++, record += 12) {
+					assert(n < 4096);
+					objects.insert(m.read32(record));
+				}
+			}
+			return extra;
+		};
+		for (int f = 1; f <= 6000; f++) {
+			m.run_frame();
+			if (!smooth) continue;
+			const auto &frame = m.m_logic[1];
+			if (frame.frame != f - 1) continue;
+			std::set<uint32_t> drawn;
+			const std::set<uint32_t> *course = nullptr;
+			for (const auto &slot : frame.slots) {
+				if (!slot.extra.empty()) {
+					assert(slot.owner == 1);
+					std::vector<uint32_t> key;
+					for (const auto &o : slot.extra) key.push_back(o.polygon);
+					course = &expected.at(key);
+				}
+				for (const auto &o : slot.extra) drawn.insert(o.polygon);
+				for (uint32_t poly : slot.polys) drawn.insert(poly);
+				for (uint32_t caller_poly : { 0x2e0130u, 0x2e0140u, 0x2e0150u }) {
+					const uint32_t polygon = m.read32(caller_poly);
+					if (std::find(slot.polys.begin(), slot.polys.end(), polygon) != slot.polys.end())
+						assert(slot.owner >= 0x400000 && slot.owner < 0x410000);
+				}
+			}
+			if (!course) continue;
+			checks++;
+			for (uint32_t polygon : *course) assert(drawn.count(polygon));
+		}
+		printf("Attract scenery (%s, %s, smooth %s, LOD %s): %d complete lists; wheel %d calls, %d outside, %d culled, %d part writes\n",
+			native ? "native" : "interpreter", full ? "full" : "arcade", smooth ? "on" : "off", lod ? "on" : "off",
+			checks, wheels, outside, culled, parts);
+		assert(wheels > 100 && outside > 100 && active > 0);
+		assert(parts == active * 3 * 2); // Each matrix command is written as two 16-bit words.
+		if (full) {
+			assert(culled == 0);
+			if (smooth) assert(checks > 100);
+		} else assert(culled == outside && checks == 0);
+	}
+
 	static void crash_materials()
 	{
 		model1::regions regions;
@@ -1100,8 +1349,25 @@ struct model1_video_test
 
 int main(int argc, char **argv)
 {
+	model1_video_test::trackside_collisions();
+	if (argc > 2 && std::string(argv[2]) == "--trackside") {
+		model1_video_test::trackside_distance(argv[1], false);
+		return 0;
+	}
 	model1_video_test::backface_specular();
 	model1_video_test::crash_materials();
+	if (argc > 2 && std::string(argv[2]) == "--attract-scenery") {
+		for (bool native : { false, true }) {
+			model1_video_test::trackside_distance(argv[1], native);
+			model1_video_test::trackside_distance(argv[1], native, false, false);
+		}
+		for (bool native : { false, true }) {
+			for (bool full : { false, true })
+				model1_video_test::attract_scenery(argv[1], full, true, true, native);
+			model1_video_test::attract_scenery(argv[1], true, false, false, native);
+		}
+		return 0;
+	}
 	if (argc > 2 && std::string(argv[2]) == "--crash-livery") {
 		for (bool native : { false, true })
 			for (bool smooth : { false, true }) model1_video_test::crash_livery(argv[1], smooth, native);
@@ -1156,6 +1422,9 @@ int main(int argc, char **argv)
 			for (bool extended : { false, true })
 				model1_video_test::logo(argv[1], smooth, extended);
 	if (argc > 1) {
+		model1_video_test::trackside_distance(argv[1], false);
+		for (bool full : { false, true })
+			model1_video_test::attract_scenery(argv[1], full, true, true, false);
 		for (bool smooth : { false, true }) model1_video_test::crash_livery(argv[1], smooth);
 		for (bool lod : { false, true })
 			for (bool smooth : { false, true }) model1_video_test::scenery_distance(argv[1], smooth, lod);

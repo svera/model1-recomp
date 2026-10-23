@@ -11,6 +11,7 @@
 #include "scene_sync.h"
 #include "gpu_compose.h"
 #include "controls.h"
+#include "gamepads.h"
 #include "../machine/parallel.h"
 #include "../rt/rec_rt.h"
 #ifdef M1_NATIVE
@@ -1508,38 +1509,20 @@ int main(int argc, char **argv)
 	constexpr int QUEUED = 3;            // frames of sound kept queued: the slack for a slow or late screen
 
 	SDL_Gamepad *pads[2] = { nullptr, nullptr };
+	pad_state pstate[2];
 	bool pads_swapped = false;           // two pads that look alike (same GUID): swapped by hand
-	auto guid_of = [](SDL_JoystickID id) {
-		char g[64];
-		SDL_GUIDToString(SDL_GetGamepadGUIDForID(id), g, sizeof g);
-		return std::string(g);
-	};
+	auto guid_of = gamepad_guid;
 	// each player's pad: the one chosen (by its GUID) if it is there, else the next free one
 	// ("auto"), or none
 	auto open_pads = [&] {
-		for (auto &pd : pads) if (pd) { SDL_CloseGamepad(pd); pd = nullptr; }
-		int n = 0;
-		SDL_JoystickID *ids = SDL_GetGamepads(&n);
-		std::vector<bool> used(n, false);
-		// first the pads chosen by name, then "auto" players take the free ones in order, then a
-		// player whose chosen pad isn't there (or shows up differently: a pad in another mode
-		// has another GUID) takes the next free one too
-		for (int pass = 0; pass < 3; pass++)
-			for (int p = 0; p < 2; p++) {
-				const std::string &c = cfg.ctl[p].pad_choice;
-				if (pads[p] || c == "none") continue;
-				const bool chosen = c != "auto";
-				if ((pass == 0 && !chosen) || (pass == 1 && chosen)) continue;
-				for (int i = 0; i < n && !pads[p]; i++)
-					if (!used[i] && (pass != 0 || guid_of(ids[i]) == c)) { pads[p] = SDL_OpenGamepad(ids[i]); used[i] = true; }
-			}
-		SDL_free(ids);
-		if (pads_swapped && pads[0] && pads[1]) std::swap(pads[0], pads[1]);
+		const bool changed = refresh_gamepads(pads, cfg.ctl, pads_swapped);
+		if (changed) pstate[0] = pstate[1] = pad_state{};
+		return changed;
 	};
 	open_pads();
+	uint64_t next_pad_scan = SDL_GetTicks() + 1000;
 
 	bool running = true, paused = false, show_frame = true;
-	pad_state pstate[2];
 	// F9: timings in the title bar (and on stderr) every 120 frames; a frame has 17.4 ms
 	struct perf_stats { bool show = false; int frames = 0, starved = 0, held = 0, long_frame = 0, long_picture = 0, long_other = 0, ahead = 0; uint64_t emu = 0, emu_max = 0, present = 0, work = 0, shown = 0, since = SDL_GetTicksNS(); };
 	perf_stats perf{ cfg.timings || getenv("M1_PERF") != nullptr };
@@ -2169,6 +2152,7 @@ int main(int argc, char **argv)
 		}
 		SDL_Event e;
 		const bool menu_was_open = menu.is_open();
+		bool pads_changed = false;
 		while (SDL_PollEvent(&e)) {
 			if (e.type == SDL_EVENT_QUIT) running = false;
 			else if (e.type == SDL_EVENT_DID_ENTER_FOREGROUND) resume_clock();
@@ -2193,8 +2177,10 @@ int main(int argc, char **argv)
 			else if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && menu.is_open() && !menu.capturing()
 					 && (e.key.scancode == SDL_SCANCODE_F11 || (e.key.scancode == SDL_SCANCODE_RETURN && (e.key.mod & SDL_KMOD_ALT))))
 				set_fullscreen(!(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN));
+			else if (e.type == SDL_EVENT_GAMEPAD_ADDED || e.type == SDL_EVENT_GAMEPAD_REMOVED ||
+					 e.type == SDL_EVENT_GAMEPAD_REMAPPED || e.type == SDL_EVENT_JOYSTICK_ADDED ||
+					 e.type == SDL_EVENT_JOYSTICK_REMOVED) pads_changed = true;
 			else if (menu.handle_event(e)) continue;
-			else if (e.type == SDL_EVENT_GAMEPAD_ADDED || e.type == SDL_EVENT_GAMEPAD_REMOVED) open_pads();
 			else if (e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED && ASPECTS[aspect_i] <= 0) {
 				float before = shape_now;
 				apply_aspect();
@@ -2223,6 +2209,11 @@ int main(int argc, char **argv)
 				} else if (e.key.scancode == SDL_SCANCODE_F11 || fullscreen_key(e.key))
 					set_fullscreen(!(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN));
 			}
+		}
+		// Retry delayed Bluetooth opens, and recover even if a connection event was missed.
+		if (pads_changed || SDL_GetTicks() >= next_pad_scan) {
+			if (open_pads()) menu.refresh();
+			next_pad_scan = SDL_GetTicks() + 1000;
 		}
 		// the menu pauses the game and its sound
 		if (menu.is_open() != menu_was_open && audio) {

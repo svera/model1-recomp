@@ -100,8 +100,11 @@ struct gameplay_callbacks
 	std::function<void(uint16_t)> work_ram_written;
 	// Optional adjustment of a completed TGP result as the V60 reads it.
 	std::function<uint32_t(uint32_t, uint32_t)> copro_result;
+	// Optional adjustment of 32-bit reads in an inclusive address range (PC, address, value).
+	// A zero end observes only read32_watch.
 	uint32_t read32_watch = 0;
-	std::function<uint32_t(uint32_t, uint32_t)> read32_value;
+	uint32_t read32_watch_end = 0;
+	std::function<uint32_t(uint32_t, uint32_t, uint32_t)> read32_value;
 	// Extra renderer-only objects attached to a matrix as the CPU writes it.
 	std::function<std::vector<render_object>()> matrix_objects;
 	// Snapshot active records when a relevant matrix is written, before visibility advances.
