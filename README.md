@@ -73,7 +73,8 @@ Non-Steam Game and set **Start In** to the extracted **VirtuaRacing** folder.
 | Open menu | Esc | View / Select |
 
 To see or change your actual controller bindings, open **Esc > Controls > Player 1 >
-Pad buttons**. Coins are only needed in Arcade play style.
+Pad buttons**. Virtua Racing hides Player 2 and Swap pads because only one player is
+supported. Coins are only needed in Arcade play style.
 
 ### Useful settings
 
@@ -128,8 +129,11 @@ Useful shared checks:
 ```sh
 make test-model1io-adc
 make test-host-gamepads
+make test-host-graphics
 make test-vr-profile test-vr-gameplay test-vr-tgp-track
 ```
+
+`test-host-graphics` needs a working SDL graphics driver (it uses a hidden window).
 
 ## Repository layout
 
