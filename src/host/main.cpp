@@ -741,8 +741,9 @@ int main(int argc, char **argv)
 	bool interp = rec_table_size == 0;   // (a build without the game's recompiled C++ has only the interpreter)
 #endif
 	bool arg_arcade = false;
-	std::string replay_path;
-	input_replay::recording replay;
+	std::string replay_path, record_path;
+	input_replay::recording replay, record;
+	bool recording = false;
 	std::string arg_roms;   // --roms <folder>: where the player's zip is (over M1_ROMS and settings.ini's roms_folder)
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
@@ -752,6 +753,7 @@ int main(int argc, char **argv)
 		else if (a == "--interp") interp = true;      // MAME's V60 interpreter instead of the recompiled code
 		else if (a == "--arcade") arg_arcade = true;  // boot screen, credits and coins as on the cabinet
 		else if (a == "--replay-inputs" && i + 1 < argc) replay_path = argv[++i];
+		else if (a == "--record-inputs" && i + 1 < argc) record_path = argv[++i];
 		else if (a == "--aspect" && i + 1 < argc) {
 			std::string v = argv[++i];
 			for (int k = 0; k < N_ASPECTS; k++) if (v == ASPECT_NAMES[k]) arg_aspect = k;
@@ -768,6 +770,10 @@ int main(int argc, char **argv)
 		}
 	}
 	const bool replay_mode = !replay_path.empty();
+	if (!record_path.empty() && !replay_mode) {
+		fprintf(stderr, "--record-inputs needs --replay-inputs: it records the replayed prefix plus the manual play after it\n");
+		return 2;
+	}
 	if (replay_mode) {
 		if (host_game().name != "swa" || getenv("M1_SCRIPT")) {
 			fprintf(stderr, "--replay-inputs is experimental SWA-only and cannot be combined with M1_SCRIPT\n");
@@ -1597,7 +1603,19 @@ int main(int argc, char **argv)
 	// Reset (the menu, F3): the menu closes, a paused game unpauses, and the screen goes black at
 	// once while the boot runs unseen (a few seconds on a slow machine), not the last picture held.
 	bool shape_restart = false;   // a new picture shape the game reads at boot, chosen in the menu
+	// --record-inputs: the replayed prefix plus every live frame, with the RAM hash after the last
+	// one, so --replay-inputs on the file reproduces (and verifies) this exact moment
+	auto save_recording = [&](const char *why) {
+		if (!recording) return;
+		record.expected_ram = input_replay::ram_hash(m);
+		if (const auto error = input_replay::save(record_path, host_game(), record); !error.empty())
+			fprintf(stderr, "input recording: %s\n", error.c_str());
+		else
+			fprintf(stderr, "input recording: %s: saved %zu frames (%zu live) to %s, RAM hash %016llx\n", why, record.frames.size(),
+				record.frames.size() - replay.frames.size(), record_path.c_str(), (unsigned long long)record.expected_ram);
+	};
 	auto reset_game = [&](bool keep_settings = true, bool force_code = false) {
+		if (recording) { save_recording("reset ends the recording"); recording = false; }
 		arcade_picture_pending = false;
 		arcade_next_picture = 0;
 		if (keep_settings) game_part.keep_arcade_settings();     // (Arcade: as the service menu may have left them)
@@ -2084,6 +2102,10 @@ int main(int argc, char **argv)
 			replay_manual_first = false;
 		}
 		game_part.before_frame();
+		if (recording) {
+			if (record.frames.size() < input_replay::MAX_FRAMES) record.frames.push_back(input_replay::capture(m));
+			else { save_recording("frame limit reached"); recording = false; }
+		}
 		return true;
 	};
 	bool curtain_on_gpu = false;       // a curtain shown during a hold, put together by the GPU
@@ -2177,7 +2199,7 @@ int main(int argc, char **argv)
 			m.redraw();
 			m.smooth_cut();
 			sync.reset();
-			paused = true;
+			paused = !getenv("M1_REPLAY_PLAY");   // testing: live frames at once, no P needed
 			show_frame = still_dirty = true;
 			for (auto &port : m.m_inputs) port = 0xff;
 			pstate[0] = pstate[1] = pad_state{};
@@ -2185,6 +2207,11 @@ int main(int argc, char **argv)
 			SDL_SetWindowTitle(win, "SWA: manual handoff paused - P to play");
 			fprintf(stderr, "input replay: verified %zu frames, RAM hash %016llx in %.1f s; paused for manual control (P to play)\n",
 				replay.frames.size(), (unsigned long long)actual, double(SDL_GetTicksNS() - replay_start) / 1e9);
+			if (!record_path.empty()) {
+				record.frames = replay.frames;
+				recording = true;
+				fprintf(stderr, "input recording: on; saved to %s when you pause (P), reset or quit\n", record_path.c_str());
+			}
 			return true;
 		};
 		if (!replay_to_handoff()) return 1;
@@ -2293,6 +2320,7 @@ int main(int argc, char **argv)
 				else if (e.key.scancode == SDL_SCANCODE_P) {
 					paused = !paused;
 					if (replay_mode) SDL_SetWindowTitle(win, paused ? "SWA: manual play paused - P to play" : host_title());
+					if (paused) save_recording("paused");
 				}
 				else if (e.key.scancode == SDL_SCANCODE_F9) { perf.show = cfg.timings = !perf.show; cfg_dirty = true; if (!perf.show) present_shape(); }
 				else if (e.key.scancode == SDL_SCANCODE_F3) reset_game();
@@ -2742,6 +2770,7 @@ int main(int argc, char **argv)
 	g3.reset();                          // (its device goes before SDL does)
 	if (gpu_check) fprintf(stderr, "gpu check: %d pictures put together on the GPU checked, %d differ\n", gpu_checked, gpu_differ);
 	gc.release();                          // (its textures go before the renderer)
+	save_recording("quit");
 	if (replay_mode || (quit_after >= 0 && !getenv("M1_SAVE"))) { SDL_Quit(); return 0; }   // replay and test runs leave saves and settings alone
 	game_part.keep_arcade_settings();
 	saver.finish();   // (an autosave still being written, done before the last save: the same files)

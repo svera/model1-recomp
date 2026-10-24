@@ -2,9 +2,9 @@
 GAMES += swa
 swa_HOST_REC = native
 # the scripted runs model1cov records as hints for the recompile (make swa-coverage)
-swa_COV_SCENARIOS = default gunner training continue progression
+swa_COV_SCENARIOS = default gunner training continue progression recording
 swa_COV_FRAMES ?= 36000
-swa_LOCK_SCENARIOS = default gunner training continue progression
+swa_LOCK_SCENARIOS = default gunner training continue progression recording
 swa_LOCK_FRAMES ?= 36000
 
 $(OBJ)/tests/games/swa/profile_test.o $(OBJ)/tests/games/swa/controls_test.o $(OBJ)/tests/games/swa/dsb_test.o: CXXFLAGS += $(SDL_CFLAGS)
@@ -41,8 +41,15 @@ $(BIN)/swa_gameplay_test: $(OBJ)/tests/games/swa/gameplay_test.o $(GAMES_LINK) $
 test-swa-gameplay: $(BIN)/swa_gameplay_test swa-regions
 	$(BIN)/swa_gameplay_test build/swa
 
+# a recorded human run, replayed by its cabinet inputs (tests/games/swa/recordings)
+$(BIN)/swa_recording_test: $(OBJ)/tests/games/swa/recording_test.o $(GAMES_LINK) $(call objs,$(RT) $(NATIVE)) $(REC_NONE) $(SLJIT_OBJ) $(CORO_OBJ)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
+test-swa-recording: $(BIN)/swa_recording_test swa-regions
+	$(BIN)/swa_recording_test build/swa
+
 test-swa-video: $(BIN)/model1_video_test swa-regions
 	$(BIN)/model1_video_test build/swa --swa-priority
 	$(BIN)/model1_video_test build/swa --swa-object-bounds
 
-.PHONY: test-swa-profile test-swa-romset test-swa-boot test-swa-controls test-swa-dsb test-swa-gameplay test-swa-video
+.PHONY: test-swa-profile test-swa-romset test-swa-boot test-swa-controls test-swa-dsb test-swa-gameplay test-swa-recording test-swa-video

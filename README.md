@@ -134,6 +134,7 @@ make test-swa-controls              # buttons and axes against the game's own in
 make test-swa-dsb                   # the Digital Sound Board, stubbed and in the attract sequence
 make test-swa-gameplay              # Rebel Attack (both seats) and Training, to game over and back
 make test-swa-video                 # name-entry priority and real-input destroyer crash regression
+make test-swa-recording             # a recorded human run: trench objective, next stage, continue offer
 make swa-coverage                   # record those runs as hints for the recompile
 make swa-native-lockstep            # native code against the interpreter, all scenarios, 36,000 frames
 make swa-lockstep                   # the same for the generated C++
@@ -162,6 +163,21 @@ battery/work-RAM checksum, and **pauses at the handoff**. Press **P** to take ov
 both seats with the usual keyboard or gamepad controls; no scripted steering or
 firing remains active. Esc cancels during replay and opens the menu afterward.
 Relaunch the command to retry the same phase; F3 is an ordinary game reset.
+
+To keep your play, add `--record-inputs`:
+
+```sh
+build/bin/swa build/swa --replay-inputs build/swa-trench.inputs --record-inputs build/swa-manual.inputs
+```
+
+The output file holds the replayed prefix plus every live frame you play, with the
+RAM checksum after your last frame. It is written each time you pause with **P**,
+when you quit, and when a reset (F3 or the menu) ends the recording. Replaying
+that file with `--replay-inputs` reproduces your run exactly and hands over at the
+point you stopped, so a checkpoint can be extended by recording again from it.
+Pause right after an interesting moment (a hit, a target, the end of the trench) to
+mark it; the frame count in the header tells where you stopped. Use a different
+output name if you don't want to overwrite the earlier recording.
 
 Replay mode ignores existing battery/EEPROM saves and never writes saves or
 settings, including after manual play. It uses arcade mode, 4:3, 1x and whole-frame
@@ -203,7 +219,8 @@ runs (`make swa-coverage`) and the entries the runtime noted when native code fe
 interpreter (`build/cov/swa/runtime_entries.txt`). Most of those are pseudo-calls: the game pushes a
 return address and branches (and its reset pushes one and runs `RETIS`), so the code returned to has
 no caller in the native code and must be an entry of its own. The map was regenerated until the
-lockstep noted no more; `swa-native-lockstep` and `swa-lockstep` run all five scenarios to frame
+lockstep noted no more; `swa-native-lockstep` and `swa-lockstep` run all six scenarios (the five
+scripted ones and `recording`, a human's recorded run) to frame
 36,000 with `--strict` (no fallback), comparing registers, RAM and rendered frames with the interpreter.
 `test-swa-gameplay` plays all five scenarios natively with sound. Code the scripts never reach
 (other missions' branches, the test menu) may still fall back to the interpreter, which is correct
@@ -333,6 +350,16 @@ extends the descent, retains shield 832 through local Z=140000, and reaches
 then gives zero terrain hits through Z=150000 with shield still 832 and maximum
 live-shield progress of 174637 units. Later terrain collisions remain: this probe
 still does not complete the second objective and is not part of the shared scenario.
+
+A human player has since completed the trench objective from that handoff, recorded with
+`--record-inputs`. `test-swa-recording` replays the committed recording
+(`tests/games/swa/recordings/manual-trench-to-continue.inputs`) on the interpreter and on native
+code with sound. It requires the RAM checksums at the trench handoff (16,600 frames), next-stage
+arrival (21,635) and continue offer (24,755), and every sequence, subsequence and shield change
+from the handoff on: the trench objective at frame 17,961, next-stage flight at 22,016, two
+surface crashes, and the continue offer at 24,644. It runs in about 30 seconds. The same inputs
+are the `recording` scenario of the coverage and lockstep tools, so the native map covers the
+manually reached code with no interpreter fallback.
 
 `test-swa-gameplay` runs the original three scenarios to frame 22,000, `continue` to 36,000
 and `progression` to 10,000

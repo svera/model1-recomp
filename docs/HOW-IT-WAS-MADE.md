@@ -1373,6 +1373,37 @@ before/after file checks also pass with the host test's `M1_SAVE` enabled.
 Relaunching the command retries from the same phase; F3 remains an ordinary reset.
 This replays real inputs, not a partial RAM snapshot or forced game state.
 
+Manual play can be kept with `--record-inputs FILE`, valid only with
+`--replay-inputs`. Each live frame's cabinet inputs are captured at the same
+point the replayed rows are applied: after the host has read the controls and
+immediately before the frame runs. That point is shared by paced frames,
+run-ahead frames and Tab fast-forward. The file holds the prefix plus those live
+rows and the RAM hash after the last one. It is written on P (pause), quit, and
+a reset, which ends the recording. A hidden 578-live-frame recording replays to
+its hash `5b97ea5c5f687609` on both native and interpreter hosts, so a player's
+run becomes a new, verifiable handoff point.
+
+From that handoff a human player completed the trench objective. Replaying the
+recording, the shield fell from 832 to 576 about a third of a second after the
+handoff, because controls start neutral just before the constriction. Three more
+`c736b` hits followed. Subsequence 5 became 6 at machine frame 17,961, near trench
+Z≈576,500, with no fire button held in the preceding six seconds; this suggests
+reaching the trench's end completes it, though the ROM condition is not yet traced.
+The next stage began at 19,394 and its flight at 22,016. A second recording
+continued from there. Two terrain-damage hits at 22,330 (384→1) and 24,174 ended
+in the continue offer at 24,644.
+
+That recording, of which the earlier ones are exact prefixes, is committed as
+`tests/games/swa/recordings/manual-trench-to-continue.inputs`; the file is 876 KB
+of text but compresses to about 13 KB. `test-swa-recording` replays it on the
+interpreter silently and on native code with sound. It asserts the three handoff
+checksums and the exact list of sequence/subsequence/shield changes from the
+trench handoff on. Its first native run fell back to the interpreter 1,569 times:
+the scripts never reached the trench's or next stage's code. The same inputs
+became SWA's `recording` scenario for `model1cov` and both lockstep tools. Coverage
+plus two runtime-entry passes, using the shipped map as a hint so no entry was
+lost, added 101 entries and 1,313 edges, removed none, and left zero fallbacks.
+
 The host/parser tests, ordinary desktop-startup smoke test, SWA controls test,
 gamepad test and sound-enabled progression regression pass. The latter still
 matches interpreter, silent and native execution. Evidence, rejected candidates,
@@ -1412,13 +1443,17 @@ The main local checks are:
   independent aiming, plus continuation checks with the coin or Start withheld. An
   shared visual progression driver completes the opening objective, with a no-firing control.
 - `make test-model1-video test-swa-video`: synthetic HUD priority and real name-entry rendering.
-- `make swa-native-lockstep swa-lockstep`: all five scenarios against the interpreter,
+- `make test-swa-recording`: a human's recorded run replayed on the interpreter and native code,
+  with exact RAM checksums and game-state transitions through the trench objective, the next
+  stage and the continue offer.
+- `make swa-native-lockstep swa-lockstep`: all six scenarios against the interpreter,
   36,000 frames each.
 
 These are ROM-backed local checks where applicable, not evidence that every cabinet behaviour
 or every mission branch has been validated. The Gunner's buttons and axes are checked in the
 input test and scripted play, and a solo failed-mission continue/restart is checked.
-The opening objective and next-stage entry are now checked in all three execution backends, but later
+The opening objective and next-stage entry are now checked in all three execution backends, and a
+recorded human run checks the trench objective and the following stage's start. Later
 objectives, mission victories and team-mode continuation still lack comprehensive checks.
 Camera/mode RAM is still unidentified, so boot skipping and SWA-specific widescreen
 behaviour are not established. Release packaging remains VR-only.

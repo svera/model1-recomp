@@ -248,12 +248,16 @@ void model1::set_volumes(float music, float effects)
 	if (m_audio) m_audio->set_volumes(music, effects);
 }
 
-bool model1::set_analog_input(int channel, uint8_t value)
+bool model1::has_analog_input(int channel) const
 {
 	const auto &profile = game::get_io_profile(m_regions.title);
-	if (channel < 0 || channel >= int(profile.analog_controls.size()) ||
-		profile.analog_controls[channel].empty() || !m_ioboard)
-		return false;
+	return channel >= 0 && channel < int(profile.analog_controls.size()) &&
+		   !profile.analog_controls[channel].empty() && m_ioboard;
+}
+
+bool model1::set_analog_input(int channel, uint8_t value)
+{
+	if (!has_analog_input(channel)) return false;
 	m_analog_inputs[channel] = value;
 	m_ioboard->analog_inputs[channel] = value;
 	return true;

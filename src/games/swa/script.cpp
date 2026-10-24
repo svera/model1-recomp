@@ -12,12 +12,16 @@
 // 0x40f009 is the subsequence (12 offers continue with sequence 13 and an unset clock);
 // 0x40f0e0 is the credit counter.
 #include "../script.h"
+#include "../../host/input_replay.h"
 #include "../../machine/model1.h"
 #include "profile.h"
 #include <algorithm>
 #include <cstdio>
 
 namespace game::swa {
+
+// the recorded human run the "recording" scenario replays, from the repository's folder
+constexpr const char *RECORDING = "tests/games/swa/recordings/manual-trench-to-continue.inputs";
 
 namespace {
 
@@ -338,10 +342,44 @@ private:
 		m_game_over = false, m_ranked = false, m_attract = false, m_aimed = false;
 };
 
+// A human's recorded run (tests/games/swa/recordings), its cabinet inputs frame by frame; after its
+// last frame, nothing pressed and the axes left where they were. For the recompile's coverage and
+// the native and generated-C++ lockstep: paths only manual play reaches.
+class recorded final : public auto_play
+{
+public:
+	explicit recorded(input_replay::recording r) : m_rec(std::move(r)) {}
+	script_inputs frame(int f) override
+	{
+		return size_t(f - 1) < m_rec.frames.size() ? m_rec.frames[size_t(f - 1)] : script_inputs{};
+	}
+	std::string check(int f, model1 &m) override
+	{
+		if (size_t(f) == m_rec.frames.size() && input_replay::ram_hash(m) != m_rec.expected_ram)
+			return "SWA recording diverged: RAM hash differs from the recorded run's at its last frame";
+		if (size_t(f) == m_rec.frames.size()) m_matched = true;
+		return {};
+	}
+	std::string finish() override { return m_matched ? std::string() : "SWA recording: the run ended before the recording's last frame"; }
+	int min_frames() const override { return int(m_rec.frames.size()); }
+
+private:
+	input_replay::recording m_rec;
+	bool m_matched = false;
+};
+
 }
 
 std::unique_ptr<auto_play> make_auto_play(const std::string &scenario, uint32_t seed, bool checks)
 {
+	if (scenario == "recording") {
+		input_replay::recording r;
+		if (const auto error = input_replay::load(RECORDING, ID, r); !error.empty()) {
+			fprintf(stderr, "SWA recording scenario (run from the repository's folder): %s\n", error.c_str());
+			return nullptr;
+		}
+		return std::make_unique<recorded>(std::move(r));
+	}
 	if (!scenario.empty() && scenario != "gunner" && scenario != "training" && scenario != "continue" &&
 		scenario != "progression") return nullptr;
 	return std::make_unique<play>(scenario == "gunner" || scenario == "progression", scenario == "training",

@@ -82,6 +82,7 @@ public:
 	int frame_h() const { return m_bitmap.height(); }
 	v60_device &cpu() { return m_maincpu; }
 	bool set_analog_input(int channel, uint8_t value);
+	bool has_analog_input(int channel) const;
 	// Battery-backed RAM (0x400000-0x40ffff) and the I/O board's EEPROM (the real board's 93C46,
 	// or the stand-in's image in the dual-port RAM at 0x100-0x17f).
 	std::vector<uint8_t> &nvram() { return m_ram_a; }
