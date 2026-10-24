@@ -1,6 +1,6 @@
 // Star Wars Arcade's scripted play: attract, two coins (three for PILOT & GUNNER), the mode and
 // mission menus confirmed with Start (Rebel Attack, or Training), then seeded flying and firing until the shields or the time
-// run out, the rankings and back to attract; with the checkpoints such a run must reach.
+// run out, the rankings and back to attract; optionally continue once after failure.
 //
 // The battery RAM the checks read was found by watching runs against the screen, not from the
 // program's code: 0x40f008 the sequence (1-2 attract, 11-13 credited and playing, 14 game over and
@@ -8,6 +8,8 @@
 // 0x40f510 the Pilot's and Gunner's scores (BCD), 0x40f100 the PILOT rankings (ten 8-byte entries:
 // BCD score, a name) and 0x40f150 the PILOT & GUNNER ones (ten 12-byte entries: the team's total,
 // both names). 0x40f340/0x40f342 are the signed Gunner Y/X inputs, observed against the reticle.
+// 0x40f009 is the subsequence (12 offers continue with sequence 13 and an unset clock);
+// 0x40f0e0 is the credit counter.
 #include "../script.h"
 #include "../../machine/model1.h"
 #include "profile.h"
@@ -19,7 +21,8 @@ namespace game::swa {
 namespace {
 
 constexpr uint32_t SEQUENCE = 0xf008, TIME = 0xf334, PILOT_SCORE = 0xf410, GUNNER_SCORE = 0xf510,
-	PILOT_RANKINGS = 0xf100, TEAM_RANKINGS = 0xf150, GUNNER_Y = 0xf340, GUNNER_X = 0xf342;
+	PILOT_RANKINGS = 0xf100, TEAM_RANKINGS = 0xf150, GUNNER_Y = 0xf340, GUNNER_X = 0xf342,
+	SUBSEQUENCE = 0xf009, CREDITS = 0xf0e0;
 constexpr int RANKING_ENTRIES = 10, PILOT_RANKING_SIZE = 8, TEAM_RANKING_SIZE = 12;
 constexpr uint8_t SEQ_ATTRACT = 1, SEQ_PLAYING = 13, SEQ_GAME_OVER = 14;
 
@@ -38,8 +41,9 @@ constexpr int GUNNER_AIM_FROM = 3700, GUNNER_AIM_HOLD = 120;
 class play final : public auto_play
 {
 public:
-	play(bool gunner, bool training, uint32_t seed, bool checks)
-		: m_gunner(gunner), m_training(training), m_rng(seed * 2654435761u + 1), m_checks(checks) {}
+	play(bool gunner, bool training, bool continuing, uint32_t seed, bool checks)
+		: m_gunner(gunner), m_training(training), m_continuing(continuing),
+			m_rng(seed * 2654435761u + 1), m_checks(checks) {}
 
 	script_inputs frame(int f) override
 	{
@@ -84,6 +88,44 @@ public:
 		return s;
 	}
 
+	script_inputs frame(int f, model1 &m) override
+	{
+		auto s = frame(f);
+		if (!m_continuing) return s;
+		const auto &ram = m.nvram();
+		const unsigned time = ram[TIME] | ram[TIME + 1] << 8;
+		const bool offer = ram[SEQUENCE] == SEQ_PLAYING && ram[SUBSEQUENCE] == 12 && time == 0xffff;
+		if (!m_continue_frame && f > FLY_FROM && offer) {
+			m_continue_frame = f;
+			m_failed_score = score(m, PILOT_SCORE);
+			m_empty_offer = ram[CREDITS] == 0;
+		}
+		if (!m_continue_frame) return s;
+		if (!m_mode_frame && f > m_continue_frame + 150 &&
+			ram[SEQUENCE] == SEQ_PLAYING && ram[SUBSEQUENCE] == 1)
+			m_mode_frame = f;
+		if (m_mode_frame && !m_resumed && time != 0xffff && time / 30 == 180) {
+			m_resumed = true;
+			m_resume_time = time;
+			m_reset_score = score(m, PILOT_SCORE) == 0;
+			m_spent_credits = ram[CREDITS] == 0;
+		}
+		if (m_resumed && time != 0xffff && time < m_resume_time) m_second_flight = true;
+		if (m_second_flight && offer) m_second_offer = true;
+		if (!m_resumed || offer) {
+			s.analog[STICK_X] = s.analog[STICK_Y] = STICK_CENTRE;
+			s.pressed[1] = 0;
+		}
+		if (!m_resumed) {
+			const int elapsed = f - m_continue_frame;
+			if (elapsed >= 30 && elapsed < 30 + PRESS) s.pressed[0] |= COIN;
+			if ((elapsed >= 150 && elapsed < 150 + PRESS) ||
+				(m_mode_frame && f >= m_mode_frame + 180 && f < m_mode_frame + 180 + PRESS))
+				s.pressed[0] |= START;
+		}
+		return s;
+	}
+
 	std::string check(int f, model1 &m) override
 	{
 		if (!m_checks) return {};
@@ -121,7 +163,30 @@ public:
 			if (y > 3000) m_aim_directions |= 8;
 			if (m_aim_directions == 15) reached("gunner aimed in all four directions", m_aimed);
 		}
+		if (m_continuing && m_continue_frame) {
+			if (!m_empty_offer || !m_failed_score)
+				return "SWA continue: first offer lacked a scored failed attempt with zero credits";
+			reached("continue offered after mission failure", m_offered);
+			if (!m_resumed && ram[CREDITS] == 1) reached("one continue credit accepted", m_one_credit);
+			if (m_resumed) {
+				if (!m_one_credit || !m_spent_credits || !m_reset_score) {
+					char text[220];
+					snprintf(text, sizeof text, "SWA continue at frame %d: credit accepted %d, spent %d, score reset %d (credits %u, score %x)",
+						f, m_one_credit, m_spent_credits, m_reset_score, ram[CREDITS], score(m, PILOT_SCORE));
+					return text;
+				}
+				reached("continued attempt (credits spent, score reset)", m_restart_checked);
+				if (m_second_flight) reached("continued flight (time counting down)", m_second_flying_checked);
+				if (m_second_flight && time != 0xffff && score(m, PILOT_SCORE) != 0)
+					reached("continued attempt's first hit", m_second_hit);
+			}
+			if (m_second_offer) reached("second continue offer (no more coins)", m_second_offer_checked);
+			if (!m_game_over && sequence == SEQ_ATTRACT)
+				return "SWA returned to attract before the continued attempt's game over";
+		}
 		if (m_flying && !m_game_over && sequence == SEQ_GAME_OVER) {
+			if (m_continuing && !m_second_offer)
+				return "SWA continue: game over before the continued attempt finished";
 			reached("game over", m_game_over);
 			m_final_pilot = score(m, PILOT_SCORE);
 			m_final_gunner = score(m, GUNNER_SCORE);
@@ -162,10 +227,12 @@ public:
 			return "SWA gunner scenario: the Gunner never scored";
 		if (m_gunner && !m_aimed)
 			return "SWA gunner scenario: the Gunner did not aim in all four directions";
+		if (m_continuing && !(m_restart_checked && m_second_flying_checked && m_second_hit && m_second_offer_checked))
+			return "SWA continue scenario did not resume, score and finish a second attempt";
 		return {};
 	}
 
-	int min_frames() const override { return m_checks ? 22000 : 0; }
+	int min_frames() const override { return m_checks ? (m_continuing ? 36000 : 22000) : 0; }
 
 private:
 	static uint32_t score(model1 &m, uint32_t at)
@@ -193,13 +260,20 @@ private:
 	}
 	int rnd(int k) { m_rng = m_rng * 1103515245 + 12345; return int((m_rng >> 16) % unsigned(k)); }
 
-	const bool m_gunner, m_training;
+	const bool m_gunner, m_training, m_continuing;
 	uint32_t m_rng;
 	const bool m_checks;
 	int m_next_turn = 0, m_target_x = STICK_CENTRE, m_target_y = STICK_CENTRE, m_x = STICK_CENTRE,
 		m_y = STICK_CENTRE, m_throttle = 60;
 	unsigned m_last_time = 0;
 	unsigned m_aim_directions = 0;
+	int m_continue_frame = 0, m_mode_frame = 0;
+	unsigned m_resume_time = 0;
+	uint32_t m_failed_score = 0;
+	bool m_empty_offer = false, m_resumed = false, m_reset_score = false, m_spent_credits = false,
+		m_second_flight = false, m_second_offer = false, m_one_credit = false,
+		m_offered = false, m_restart_checked = false, m_second_flying_checked = false, m_second_hit = false,
+		m_second_offer_checked = false;
 	uint32_t m_final_pilot = 0, m_final_gunner = 0;
 	std::array<uint8_t, RANKING_ENTRIES * (PILOT_RANKING_SIZE + TEAM_RANKING_SIZE)> m_initial_rankings{};
 	bool m_credited = false, m_mission = false, m_flying = false, m_pilot_hit = false, m_gunner_hit = false,
@@ -210,8 +284,8 @@ private:
 
 std::unique_ptr<auto_play> make_auto_play(const std::string &scenario, uint32_t seed, bool checks)
 {
-	if (!scenario.empty() && scenario != "gunner" && scenario != "training") return nullptr;
-	return std::make_unique<play>(scenario == "gunner", scenario == "training", seed, checks);
+	if (!scenario.empty() && scenario != "gunner" && scenario != "training" && scenario != "continue") return nullptr;
+	return std::make_unique<play>(scenario == "gunner", scenario == "training", scenario == "continue", seed, checks);
 }
 
 }

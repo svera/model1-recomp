@@ -671,8 +671,9 @@ looking for the Pilot's score in the solo table was the wrong test.
 With seed 12345, Rebel Attack's flight starts at frame 3206. The solo script reaches
 game over around frame 16,700 and returns to attract around 17,700. The original centred-Gunner
 run finished at similar times; moving its aim changes the outcome and extends the run (below). These runs verify a final
-score in the rankings, not deliberate entry of a particular name. The full scenarios run for
-22,000 frames. Minimum-length enforcement is enabled with checks, not for short diagnostic runs.
+score in the rankings, not deliberate entry of a particular name. These gameplay tests run for
+22,000 frames; the later continuation test needs 36,000. Minimum-length enforcement is enabled
+with checks, not for short diagnostic runs.
 
 ### Training needed a different ending check
 
@@ -718,7 +719,7 @@ so one successful collection pass is not necessarily the last.
 
 The shipped `assets/games/swa/swa_map.txt` contains addresses, not ROM code. Both `make swa` and
 `make swa-native` use startup-native execution. The generated-C++ build remains a development
-alternative. All three scenarios (default Rebel Attack, `gunner`, `training`) pass 22,000 frames
+alternative. All four scenarios (default Rebel Attack, `gunner`, `training`, `continue`) run 36,000 frames
 of strict native and generated-C++ lockstep: CPU registers after every scanline, battery/work
 RAM and rendered frames after every frame, with no runtime interpreter fallback. This does not
 mean every opcode is emitted directly as host instructions; supported handler calls remain
@@ -772,6 +773,79 @@ at 19614 and attract at 20557, still inside the 22,000-frame test. Its team scor
 the rankings as before. The coverage recording is updated for this changed run, and strict
 native and generated-C++ lockstep cover it.
 
+### Continuing after mission failure
+
+The next script needed feedback rather than another absolute frame schedule. Screenshots and
+battery-RAM snapshots identified a continue offer as sequence `0x40f008 == 13`, subsequence
+`0x40f009 == 12` and timer `0xffff`. The unset timer matters: a failed mission need not have
+an ordinary zero clock. Subsequence 1 was observed during the following mode/intro transition;
+these observations are not a complete decoding of every game state.
+
+The `continue` scenario uses the normal seeded solo Rebel Attack until that first offer.
+It centres the Pilot and releases firing, inserts a coin 30 frames after detection, presses
+Start for YES at +150, then confirms the centred PILOT choice 180 frames after the mode
+transition is observed. The reference machine supplies the observations for both sides of
+lockstep. No game state is written, and the underlying Pilot random sequence keeps advancing.
+
+The credit counter at `0x40f0e0` corrected an early assumption. A new solo game costs two credits,
+but a solo continue costs only one: a two-coin probe left one credit after resumption. The
+final script inserts exactly one, observes it accepted, then requires zero remaining credits.
+Accepting continue also resets the Pilot score rather than preserving it. A fresh 180-second
+clock alone is not enough: checks require the reset score, spent credit, resumed countdown,
+a new positive score and a second continue offer. That offer gets no further coin or Start,
+so the script verifies expiration, final game over, name-entry completion and the second
+attempt's score in the solo rankings.
+
+With seed 12345 the first offer appears at frame 14506, holding BCD score `5001`; the coin is
+observed at 14543. The reset clock/score is observed at 15001, countdown at 15746 and a new hit
+at 16269. The second offer arrives at 27045 with BCD score `5482`, game over at 31775 and attract
+with the final ranking at 32718. The checked scenario therefore requires 36,000 frames.
+Coverage and both lockstep targets use 36,000 for all four scenarios through the existing
+per-game configuration; the original three sound-enabled gameplay runs remain 22,000.
+
+Two negative runs suppress either the new coin or Start after the first offer. Neither can
+reach a fresh 180-second clock or satisfy the continuation checks. Positive sound-enabled runs
+compare final battery/work RAM hashes between interpreter and native execution, with no
+native fallback. Continue coverage and runtime entries extend the shipped map while retaining
+all existing entries; strict native and generated-C++ lockstep compare registers, RAM and
+rendered frames throughout. Extending the older scenarios to 36,000 also reaches later
+attract playback: their coverage had to be refreshed, and strict runs exposed additional
+pseudo-call return entries beyond the original 22,000-frame window. This validates one solo
+continuation after failure, not winning the mission, unlimited continues or the PILOT & GUNNER
+continuation path.
+
+### Reaching a successful objective with cabinet inputs
+
+Random flying established reproducibility and failure handling, but did not establish a
+successful objective. A centred Pilot firing continuously at fast throttle improved the
+opening fight without finishing it. Slow throttle ended sooner through damage. The useful
+change was selecting PILOT & GUNNER and steering the independently movable Gunner reticle.
+
+The first successful driver keeps the Pilot centred at fast throttle (ADC 28), holds both
+laser buttons and pulses both torpedoes for six frames every 90 frames. Starting at frame
+3300, it renders every fourth frame and selects the blue pixel nearest the screen centre
+inside a bounded gameplay region. The Gunner ADC values follow from the measured reticle
+slopes: 1.41 horizontal and 0.93 vertical pixels per input unit, with both axes inverted and
+clamped to the calibrated 27-227 travel. This is deliberately a simple visual heuristic,
+not a general enemy recognizer: blue engine details can attract it too. It only observes
+rendered pixels and sends cabinet inputs; it does not modify enemy data, scores or timers.
+
+Screenshots established what the observed transitions meant. With seed 12345, sequence 13's
+subsequence changes from 3 to 4 at frame 8568, and the screen says "Proceed to engage the Super
+Star Destroyer." The timer pauses at raw value 2630. At frame 9574 subsequence 5 begins; the
+screen shows the new flight and "Time Extend 60", and the timer becomes 4430, exactly 1800
+ticks higher. The next-stage clock then counts down. This proves completion of the opening
+objective and entry into the next stage, not destruction of the Super Star Destroyer or a
+complete Rebel Attack victory. The exploratory run later failed in that next stage.
+
+`swa_gameplay_test build/swa --objective` repeats the input driver on the interpreter with
+sound enabled, requiring the ordered flight/briefing/next-stage transitions, the exact
+60-second addition and resumed countdown. A negative run with both seats' firing disabled
+must reach flight but neither success transition within 10,000 frames. Both runs pass.
+The check also runs in `make test-swa-gameplay`. Unlike the four existing scripted scenarios,
+this pixel-feedback driver has not yet been integrated with coverage or native/generated-C++
+lockstep; their passing results do not validate its newly reached code paths.
+
 ### The name-entry priority bug scripts did not notice
 
 A manual screenshot showed the rotating yellow name-entry letters broken into fragments over
@@ -799,17 +873,20 @@ The main local checks are:
 - `make test-swa-boot`: repeated interpreter boot, FIFO invariants, IRQ timing and audio pacing.
 - `make test-swa-controls`: button routing and analog ranges against the game's input test.
 - `make test-swa-dsb`: serial receiver, MPEG controls, real music trigger and audio comparison.
-- `make test-swa-gameplay`: all three scenarios with sound, silent/sound RAM agreement, and
+- `make test-swa-gameplay`: all four scenarios with sound, silent/sound RAM agreement, and
   native runs with no interpreter fallback; also deterministic Gunner inputs and on-screen
-  independent aiming.
+  independent aiming, plus continuation checks with the coin or Start withheld. An
+  interpreter-only visual driver completes the opening objective, with a no-firing control.
 - `make test-model1-video test-swa-video`: synthetic HUD priority and real name-entry rendering.
-- `make swa-native-lockstep swa-lockstep`: all three complete scenarios against the interpreter.
+- `make swa-native-lockstep swa-lockstep`: all four complete scenarios against the interpreter,
+  36,000 frames each.
 
 These are ROM-backed local checks where applicable, not evidence that every cabinet behaviour
 or every mission branch has been validated. The Gunner's buttons and axes are checked in the
-input test and scripted play, but a checked continue/restart remains to be added.
-Later stages and continue screens have been observed without comprehensive objective
-checks. Camera/mode RAM is still unidentified, so boot skipping and SWA-specific widescreen
+input test and scripted play, and a solo failed-mission continue/restart is checked.
+The opening objective and next-stage entry are now checked on the interpreter, but later
+objectives, mission victories and team-mode continuation still lack comprehensive checks.
+Camera/mode RAM is still unidentified, so boot skipping and SWA-specific widescreen
 behaviour are not established. Release packaging remains VR-only.
 
 The useful pattern was to keep three claims separate: the program runs reproducibly, native code
