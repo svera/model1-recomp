@@ -128,8 +128,11 @@ Useful shared checks:
 ```sh
 make test-model1io-adc
 make test-host-gamepads
+make test-host-graphics
 make test-vr-profile test-vr-gameplay test-vr-tgp-track
 ```
+
+`test-host-graphics` needs a working SDL graphics driver (it uses a hidden window).
 
 ## Repository layout
 
