@@ -117,6 +117,12 @@ $(BIN)/host_gamepads_test: $(OBJ)/tests/host_gamepads_test.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(SDL_LIBS)
 
+$(BIN)/host_input_replay_test: $(OBJ)/tests/host_input_replay_test.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDLIBS)
+test-host-input-replay: $(BIN)/host_input_replay_test
+	$(BIN)/host_input_replay_test
+.PHONY: test-host-input-replay
+
 test-host-gamepads: $(BIN)/host_gamepads_test
 	$(BIN)/host_gamepads_test
 

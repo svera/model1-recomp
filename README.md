@@ -133,7 +133,7 @@ make test-swa-boot                  # two 1800-frame cold boots; needs model1io.
 make test-swa-controls              # buttons and axes against the game's own input test
 make test-swa-dsb                   # the Digital Sound Board, stubbed and in the attract sequence
 make test-swa-gameplay              # Rebel Attack (both seats) and Training, to game over and back
-make test-swa-video                 # name-entry letters over the photograph, at 1x and 2x
+make test-swa-video                 # name-entry priority and real-input destroyer crash regression
 make swa-coverage                   # record those runs as hints for the recompile
 make swa-native-lockstep            # native code against the interpreter, all scenarios, 36,000 frames
 make swa-lockstep                   # the same for the generated C++
@@ -148,6 +148,38 @@ and checked. These tables target MAME 0.280's US set, including `315-5711.bin` w
 compatibility. Newer sets with a different TGP checksum and the Japanese `swaj` program are
 not supported by these tables.
 
+#### Replay to manual play (experimental)
+
+The SWA desktop host accepts a recorded cabinet-input prefix. With the current
+session-generated trench recording (not shipped with the game):
+
+```sh
+build/bin/swa build/swa --replay-inputs build/swa-trench.inputs
+```
+
+It cold-boots, fast-forwards those inputs without rendering, verifies the final
+battery/work-RAM checksum, and **pauses at the handoff**. Press **P** to take over
+both seats with the usual keyboard or gamepad controls; no scripted steering or
+firing remains active. Esc cancels during replay and opens the menu afterward.
+Relaunch the command to retry the same phase; F3 is an ordinary game reset.
+
+Replay mode ignores existing battery/EEPROM saves and never writes saves or
+settings, including after manual play. It uses arcade mode, 4:3, 1x and whole-frame
+rendering for reproduction; normal launches are unchanged. A missing, malformed,
+wrong-game or checksum-divergent recording is an explicit error, not a handoff.
+It cannot be combined with `M1_SCRIPT`. This is input replay, **not a save state**:
+the game must still execute every preceding frame, and recordings may need
+regenerating when emulation changes.
+
+The text format starts with `M1INPUT 1 swa FRAME_COUNT RAM_HASH_HEX`, followed by
+one row per machine frame: three decimal pressed-bit bytes, then eight decimal
+raw ADC values (`-1` leaves a channel unchanged). It permits no memory writes.
+The current recording hands over after gameplay frame 12670, with shield 832,
+just before the next constriction; replay takes about 14 seconds on the development
+machine. The session-local route probe can export these prefixes, including the real
+Test/Service inputs that select EASY settings. `make test-host-input-replay`
+checks the format's bounds, truncation and rejection paths.
+
 **This is not finished support yet.** Scripted games play from coins to game over (below), natively
 and on the interpreter, but camera/mode RAM identification remains to be done: those addresses are
 left unset, and the original boot sequence is shown rather than skipped. Release packaging remains
@@ -157,7 +189,10 @@ Foreground polygons (display-list command `0x41`) are masked only by the HUD lay
 features, not by the background picture or the regular 3D scene. This keeps the name-entry letters
 in front of the photograph while preserving cockpit/radar features. `test-model1-video` checks
 this separation at 1x/2x and 4:3/16:9; `test-swa-video` also reaches the real name-entry screen
-and checks that the photograph does not cut holes in the letters.
+and checks that the photograph does not cut holes in the letters. It also reproduces the
+destroyer-stage malformed object through real cabinet controls and verifies execution continues
+past the former crash. Object decoding bounds-checks texture and polygon accesses and reports
+invalid requests explicitly; it does not patch ROM execution or claim second-objective completion.
 
 #### SWA native recompilation
 
@@ -168,9 +203,9 @@ runs (`make swa-coverage`) and the entries the runtime noted when native code fe
 interpreter (`build/cov/swa/runtime_entries.txt`). Most of those are pseudo-calls: the game pushes a
 return address and branches (and its reset pushes one and runs `RETIS`), so the code returned to has
 no caller in the native code and must be an entry of its own. The map was regenerated until the
-lockstep noted no more; `swa-native-lockstep` and `swa-lockstep` run all four scenarios to frame
+lockstep noted no more; `swa-native-lockstep` and `swa-lockstep` run all five scenarios to frame
 36,000 with `--strict` (no fallback), comparing registers, RAM and rendered frames with the interpreter.
-`test-swa-gameplay` plays all four scenarios natively with sound. Code the scripts never reach
+`test-swa-gameplay` plays all five scenarios natively with sound. Code the scripts never reach
 (other missions' branches, the test menu) may still fall back to the interpreter, which is correct
 but slower, and is noted for the next map.
 
@@ -258,7 +293,7 @@ offer receives no further coins or Start presses and expires before final game o
 With seed 12345 the first offer appears at 14506, the fresh clock at 15001, the second offer at
 27045, game over at 31775 and attract at 32718.
 
-With checks on, a run must be credited, select the expected mission (the initial clock shows
+With checks on, the original scenarios must be credited, select the expected mission (the initial clock shows
 180 s for Rebel Attack, 120 s for Training), start the flight (the clock counting down), score
 (and, for `gunner`, the Gunner score and all four aim directions), reach game over and return to attract. Rebel Attack must leave
 the final score in the rankings. With seed 12345 its flight starts at frame 3206; the solo run reaches
@@ -271,7 +306,7 @@ screen, not from the program's code:
 | Address | Observed meaning |
 |---|---|
 | `0x40f008` | sequence: 1–2 attract, 11–13 credited and playing, 14 game over and rankings |
-| `0x40f009` | observed subsequence: 12 is the continue offer with sequence 13 and an unset clock; 1 is mode/intro |
+| `0x40f009` | observed subsequence with sequence 13: 1 mode/intro, 3 opening flight, 4 next-objective briefing, 5 next stage, 12 continue offer (unset clock) |
 | `0x40f0e0` | credit counter |
 | `0x40f334` | time left, 16-bit, in 1/30 s (the HUD's TIME) |
 | `0x40f340`, `0x40f342` | calibrated Gunner Y/X inputs, signed 16-bit |
@@ -279,13 +314,34 @@ screen, not from the program's code:
 | `0x40f100` | PILOT rankings: ten 8-byte entries, BCD score and name |
 | `0x40f150` | PILOT & GUNNER rankings: ten 12-byte entries, the team's total and both names |
 
-`test-swa-gameplay` runs the original three scenarios to frame 22,000 and `continue` to 36,000
+Read-only destroyer-route tracing additionally identified the ship object through the 16-bit
+pointer at `0x40f408`: its address is `0x400000 | pointer`. Offsets `+0x0c/+0x10/+0x14`
+are float32 world X/Y/Z; `+0x18/+0x1a/+0x1c` are 16-bit pitch/yaw/roll angles.
+The authoritative shield word is `0x40f772`. These are diagnostic observations, not cheats
+or new progression checkpoints. See [the course investigation](docs/HOW-IT-WAS-MADE.md#tracing-the-destroyer-course)
+for the collision-grid trace, the experimental follower's distinct pitch/yaw control
+models, and its reproducible live-shield passage beyond local Z=130000.
+[Damage-source tracing and experimental target engagement](docs/HOW-IT-WAS-MADE.md#separating-trench-damage-and-improving-target-engagement)
+raise the shield word at that checkpoint from 320 to 832.
+[Tracing and dodging the larger launcher volley](docs/HOW-IT-WAS-MADE.md#avoiding-the-large-launcher-volley)
+preserves that shield through local Z=135000 and extends live-shield progress to
+161199 units, using a mesh-checked Pilot descent rather than suppressing the shot.
+[Avoiding the next fixed expanding hazard](docs/HOW-IT-WAS-MADE.md#avoiding-the-fixed-hazard-at-frame-12644)
+extends the descent, retains shield 832 through local Z=140000, and reaches
+162800 units with live shields.
+[Correcting the constriction planner](docs/HOW-IT-WAS-MADE.md#clearing-the-frame-12737-terrain-collision-and-handing-over-to-a-human)
+then gives zero terrain hits through Z=150000 with shield still 832 and maximum
+live-shield progress of 174637 units. Later terrain collisions remain: this probe
+still does not complete the second objective and is not part of the shared scenario.
+
+`test-swa-gameplay` runs the original three scenarios to frame 22,000, `continue` to 36,000
+and `progression` to 10,000
 with sound. In the default run it also checks
 that the DSB plays the in-game music during the flight (a looping stream outside the attract theme;
 it loops about every 3,340 frames) and that a silent run matches one with sound. The scripted Rebel
 Attack runs end by the clock; Training ends earlier. Later stages, the trench run, successful
 mission completion and team-mode continuation are not comprehensively checked. Last, it plays
-all four scenarios again on native code from the shipped map, with no interpreter fallback.
+all five scenarios again on native code from the shipped map, with no interpreter fallback.
 The continued run must have the same final battery/work RAM hash as its interpreter run.
 Negative tests withhold either the continue coin or Start: neither may resume flight or pass
 the scenario. For a focused continuation check:
@@ -306,20 +362,33 @@ make build/bin/swa_gameplay_test
 build/bin/swa_gameplay_test build/swa --aim
 ```
 
-The gameplay test also completes the opening Rebel Attack objective on the interpreter with
-sound enabled. It selects PILOT & GUNNER, holds the Pilot centred at fast throttle, fires both
+The shared `progression` scenario completes the opening Rebel Attack objective.
+It selects PILOT & GUNNER, holds the Pilot centred at fast throttle, fires both
 lasers and pulses both torpedoes every 90 frames. Every fourth frame, a simple visual heuristic
 aims the Gunner at the blue target pixel nearest the screen centre, using the measured reticle
 calibration. These are ordinary inputs; no scores, enemies, timers or game states are changed.
-With seed 12345, the Super Star Destroyer briefing appears at frame 8568, followed at 9574 by
+Its controls are independent of the random seed. The Super Star Destroyer briefing appears at frame 8568, followed at 9574 by
 the next stage and a 60-second bonus (raw clock 2630 to 4430). The next-stage clock must then
-count down. A matching run without firing must not reach either transition within 10,000 frames.
-This is one successful objective, not completion of Rebel Attack; this visual driver is not yet
-a coverage/lockstep scenario and does not establish native equivalence for the new path.
+count down (first observed at frame 9576). These checkpoints are required by `--scenarios`,
+with a minimum of 10,000 frames, instead of requiring game over or a ranking entry.
+The gameplay test runs it on the interpreter with and without sound and on native code with
+sound, requiring identical final battery/work RAM hashes and no native fallback. Repeated
+drivers with different seeds must emit identical controls. A matching run without firing
+must not reach either success transition within 10,000 frames and must fail the scenario.
+Coverage and strict native/generated-C++ lockstep include `progression` for 36,000 frames,
+including playback after its required objective has completed.
+This verifies one successful objective, not completion of Rebel Attack. The blue-pixel aiming
+heuristic can also target engine details; its success checks have been validated at 1x, 4:3.
 
 ```sh
 make build/bin/swa_gameplay_test
-build/bin/swa_gameplay_test build/swa --objective
+build/bin/swa_gameplay_test build/swa --progression
+# --objective remains an alias for the same focused checks.
+
+make build/bin/model1run
+mkdir -p build/swa-progression-frames
+M1_SCRIPT=1 build/bin/model1run --game swa --scenario=progression \
+  build/swa 10000 600 build/swa-progression-frames
 ```
 
 For headless screenshots and FIFO diagnostics:

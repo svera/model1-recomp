@@ -1099,9 +1099,16 @@ float model1::compute_specular(glm::vec3& normal, glm::vec3& light, float diffus
 // through the wall.
 void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, float &old_z, uint32_t owner)
 {
-	// Protect against bad data when attacking a super destroyer
-	if(tex_adr == 0xffffffff || size >= 0x1000000)
+	const uint32_t object_texture = tex_adr, object_polygon = poly_adr, object_size = size;
+	auto invalid = [&](const char *reason, uint32_t polygon) {
+		fprintf(stderr, "Model 1 renderer: %s (frame %llu, object texture %08x polygon %08x size %08x, cursor texture %08x polygon %08x)\n",
+			reason, (unsigned long long)m_frame, object_texture, object_polygon, object_size, tex_adr, polygon);
+	};
+	// Some objects seed the cursor one word before texture RAM, then increment it.
+	if (tex_adr < 0x3ffff || tex_adr >= 0x100000 || size >= 0x1000000) {
+		invalid("invalid object request", poly_adr);
 		return;
+	}
 	// a texture block the game leaves unset, coloured as the cabinet shows it (game::video_traits)
 	int unset_pen = 0;
 	for (const auto &u : m_video->unset_texture_pens)
@@ -1118,7 +1125,12 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 		poly_data = (float *)m_poly_rom;
 
 	const bool foreground = std::find(m_video->foreground_objects.begin(), m_video->foreground_objects.end(), poly_adr) != m_video->foreground_objects.end();
+	const size_t polygon_words = poly_adr & 0x800000 ? 0x400000 : m_regions.polygons.size() / sizeof(uint32_t);
 	poly_adr &= 0x7fffff;
+	if (poly_adr > polygon_words || polygon_words - poly_adr < 6) {
+		invalid("truncated object vertices", poly_adr);
+		return;
+	}
 	game::object_effects effect;
 	if (m_gameplay.object) effect = m_gameplay.object(owner, tex_adr, poly_adr, size, poly_data);
 	if (effect.hidden) return;
@@ -1194,6 +1206,10 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 
 	for (int i = 0; i < size; i++)
 	{
+		if (poly_adr >= polygon_words) {
+			invalid("unterminated object", poly_adr);
+			break;
+		}
 #if 0
 		M1_LOG(LOG_TGP, "VIDEO:     %08x (%f, %f, %f) (%f, %f, %f) (%f, %f, %f)\n",
 			*(uint32_t *)(poly_data + poly_adr) & ~(0x01800303),
@@ -1207,8 +1223,16 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 		if (!type)
 			break;
 
+		if (polygon_words - poly_adr < 10) {
+			invalid("truncated object polygon", poly_adr);
+			break;
+		}
 		if (flags & 0x00001000)
 			tex_adr++;
+		if (tex_adr >= 0x100000) {
+			invalid("object texture address out of range", poly_adr);
+			break;
+		}
 		// Flags bit 22 selects the second light parameter bank. netmerc uploads
 		// two banks (0x00-0x0c organic/terrain, 0x80-0x9e metal) and mixes
 		// polygons from both within a single display list; the other games
@@ -1352,6 +1376,10 @@ void model1::push_object(uint32_t tex_adr, uint32_t poly_adr, uint32_t size, flo
 			// bits [11:10] of the tile word select a colour mode: bit 10 marks a
 			// flat UI element (radar blips, HUD text) drawn unlit, and mode 01
 			// additionally blinks by rotating the BGR channels on alternate frames.
+			if (tex_adr < 0x40000) {
+				invalid("object texture address out of range", poly_adr);
+				break;
+			}
 			uint16_t tex_data = m_tgp_ram[tex_adr - 0x40000];
 			if (unset_pen && tex_data == 0xffff) tex_data = uint16_t(0xfc00 | unset_pen);   // (see above; still unlit)
 			if (effect.material) tex_data = effect.material(tex_data);

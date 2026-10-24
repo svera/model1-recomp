@@ -1112,6 +1112,123 @@ struct model1_video_test
 			extended ? "extended" : "arcade", views, checked);
 	}
 
+	static void object_bounds()
+	{
+		model1::regions regions;
+		regions.title = game::id{ "swa" };
+		regions.polygons.resize(17 * sizeof(uint32_t));
+		model1 m(std::move(regions));
+		m.m_quadpt = m.m_quaddb.get();
+		m.m_pointpt = m.m_pointdb.get();
+		m.m_view->set_viewport(248, 192, 0, 495, 0, 383);
+		m.m_view->set_zoom(128, 128);
+		m.m_view->viewx = 0;
+		const auto check = [&](uint32_t texture, uint32_t polygon, uint32_t size, size_t quads = 0) {
+			m.m_quadpt = m.m_quaddb.get();
+			m.m_pointpt = m.m_pointdb.get();
+			float old_z = 0;
+			m.push_object(texture, polygon, size, old_z);
+			assert(m.m_quadpt == m.m_quaddb.get() + quads);
+			assert(m.m_pointpt <= m.m_pointdb.get() + 4);
+			assert(m.m_view->viewx == 0);
+		};
+		check(0x7d082d7d, 0x082d7d08, 0);
+		check(0x2d000520, 0xd0f4212d, 0);
+		check(0x3ffff, 0, 0);
+		check(0x3fffe, 0, 0);
+		check(0x100000, 0, 0);
+		check(0x40000, 0, 0x1000000);
+		check(0x40000, 12, 0);
+		check(0x40000, 0x800000 | (0x400000 - 5), 0);
+		check(0x40000, 11, 0);
+		check(0x40000, 0x800000 | (0x400000 - 6), 0);
+		auto *rom = reinterpret_cast<uint32_t *>(m.m_regions.polygons.data());
+		rom[6] = 0x1001;
+		check(0xfffff, 0, 0);
+		rom[6] = 1;
+		rom[16] = 1;
+		check(0x40000, 0, 0);
+		rom[16] = 0;
+		check(0x40000, 0, 0);
+		// The final word may terminate a stream without another complete record.
+		check(0xffffe, 0, 1);
+		rom[6] = 0;
+		check(0x40000, 0, 0);
+		std::fill_n(m.m_view->translation, 12, 0.0f);
+		m.m_view->translation[0] = m.m_view->translation[4] = m.m_view->translation[8] = 1;
+		m.m_view->ayyc = 1;
+		m.m_view->ayys = 0;
+		const std::array<uint32_t, 17> visible{
+			0xbf800000, 0xbf800000, 0x3f800000,
+			0xbf800000, 0x3f800000, 0x3f800000,
+			0x5201, 0, 0, 0x3f800000,
+			0x3f800000, 0xbf800000, 0x3f800000,
+			0x3f800000, 0x3f800000, 0x3f800000, 0
+		};
+		std::copy(visible.begin(), visible.end(), rom);
+		check(0xffffe, 0, 0, 1);
+		check(0x3ffff, 0, 0, 1);
+		rom[6] = 0x4201;
+		check(0x3ffff, 0, 0);
+		rom[6] = 0x5201;
+		check(0x7d082d7d, 0x082d7d08, 0);
+		check(0xffffe, 0, 1, 1);
+		puts("Model 1 object address and polygon boundary tests passed");
+	}
+
+	static void swa_destroyer_bounds(const char *path)
+	{
+		const game::id title{ "swa" };
+		model1 m(load_regions(path, title));
+		m.reset();
+		auto script = game::make_auto_play(title, "progression", 12345, false);
+		assert(script);
+		const auto press = [&](uint8_t button) {
+			m.m_inputs[0] = uint8_t(~button);
+			for (int f = 0; f < 10; ++f) m.run_frame();
+			m.m_inputs[0] = 0xff;
+			for (int f = 0; f < 60; ++f) m.run_frame();
+		};
+		for (int f = 0; f < 1300; ++f) m.run_frame();
+		press(4);
+		for (int i = 0; i < 7; ++i) press(8);
+		press(4);
+		for (int row = 0; row < 3; ++row) {
+			press(8);
+			for (int i = 0; i < 3; ++i) press(4);
+		}
+		press(8); press(8); press(4);
+		for (int i = 0; i < 4; ++i) press(8);
+		press(4);
+		for (int f = 0; f < 600; ++f) m.run_frame();
+		bool malformed = false;
+		m.on_instruction = [&](uint32_t pc) {
+			if (pc == 0xc197f && m.cpu().reg(0) == 0xd93ce) {
+				assert(m.read32(0xd93ce) == 0x082d7d08);
+				assert(m.read32(0xd93d2) == 0x7d082d7d);
+				malformed = true;
+			}
+		};
+		uint64_t stage = 0;
+		for (uint64_t f = 1; f <= 14500; ++f) {
+			const bool destroyer = m.read8(0x40f008) == 13 && m.read8(0x40f009) == 5;
+			if (destroyer && !stage) stage = f;
+			auto in = script->frame(f, m);
+			if (destroyer) {
+				in.analog[0] = 127;
+				in.analog[1] = f - stage < 60 ? 227 : 127;
+				in.analog[2] = 28;
+			}
+			for (size_t c = 0; c < in.analog.size(); ++c)
+				if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
+			for (size_t p = 0; p < in.pressed.size(); ++p) m.m_inputs[p] = uint8_t(~in.pressed[p]);
+			m.set_drawing(f % 4 == 0 || f % 150 == 0);
+			m.run_frame();
+		}
+		assert(stage && malformed);
+		puts("SWA real-input destroyer malformed-object route survived");
+	}
+
 	static void foreground_order()
 	{
 		model1::regions regions;
@@ -1463,6 +1580,11 @@ struct model1_video_test
 
 int main(int argc, char **argv)
 {
+	model1_video_test::object_bounds();
+	if (argc > 2 && std::string(argv[2]) == "--swa-object-bounds") {
+		model1_video_test::swa_destroyer_bounds(argv[1]);
+		return 0;
+	}
 	model1_video_test::overlay_priority();
 	if (argc > 2 && std::string(argv[2]) == "--swa-priority") {
 		model1_video_test::swa_name_entry(argv[1]);

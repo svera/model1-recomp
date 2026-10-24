@@ -719,7 +719,8 @@ so one successful collection pass is not necessarily the last.
 
 The shipped `assets/games/swa/swa_map.txt` contains addresses, not ROM code. Both `make swa` and
 `make swa-native` use startup-native execution. The generated-C++ build remains a development
-alternative. All four scenarios (default Rebel Attack, `gunner`, `training`, `continue`) run 36,000 frames
+alternative. All five scenarios (default Rebel Attack, `gunner`, `training`, `continue`,
+`progression`) run 36,000 frames
 of strict native and generated-C++ lockstep: CPU registers after every scanline, battery/work
 RAM and rendered frames after every frame, with no runtime interpreter fallback. This does not
 mean every opcode is emitted directly as host instructions; supported handler calls remain
@@ -800,8 +801,8 @@ With seed 12345 the first offer appears at frame 14506, holding BCD score `5001`
 observed at 14543. The reset clock/score is observed at 15001, countdown at 15746 and a new hit
 at 16269. The second offer arrives at 27045 with BCD score `5482`, game over at 31775 and attract
 with the final ranking at 32718. The checked scenario therefore requires 36,000 frames.
-Coverage and both lockstep targets use 36,000 for all four scenarios through the existing
-per-game configuration; the original three sound-enabled gameplay runs remain 22,000.
+At that point, coverage and both lockstep targets used 36,000 for all four scenarios through
+the existing per-game configuration; the original three sound-enabled gameplay runs remain 22,000.
 
 Two negative runs suppress either the new coin or Start after the first offer. Neither can
 reach a fresh 180-second clock or satisfy the continuation checks. Positive sound-enabled runs
@@ -838,13 +839,546 @@ ticks higher. The next-stage clock then counts down. This proves completion of t
 objective and entry into the next stage, not destruction of the Super Star Destroyer or a
 complete Rebel Attack victory. The exploratory run later failed in that next stage.
 
-`swa_gameplay_test build/swa --objective` repeats the input driver on the interpreter with
-sound enabled, requiring the ordered flight/briefing/next-stage transitions, the exact
-60-second addition and resumed countdown. A negative run with both seats' firing disabled
-must reach flight but neither success transition within 10,000 frames. Both runs pass.
-The check also runs in `make test-swa-gameplay`. Unlike the four existing scripted scenarios,
-this pixel-feedback driver has not yet been integrated with coverage or native/generated-C++
-lockstep; their passing results do not validate its newly reached code paths.
+The initial interpreter-only probe became the shared `progression` scenario, usable by the
+runner, coverage collector and both lockstep backends. Its visual feedback is sampled before
+emitting the following frame's inputs: frame 3301 reads frame 3300, then every fourth frame.
+This preserves the successful probe's one-frame feedback delay even when tools render every
+frame. Integer ratios express the measured reticle calibration, with stable scan order for
+equally near target pixels. Inputs do not depend on the random seed. At the default 1x, 4:3
+settings the shared driver reproduces the original briefing and next-stage timings; resumed
+countdown is first observed at frame 9576.
+
+With checks enabled, progression requires credit acceptance, the 180-second mission, flight,
+both seats scoring, the ordered flight/briefing/next-stage transitions, the exact 60-second
+addition and resumed countdown. It fails if the game ends before next-stage flight. Unlike
+the failure/ranking scenarios, its goal is successful progression, not game over; the minimum
+checked run is 10,000 frames. The existing per-game coverage/lockstep configuration records
+36,000 frames, including the later playback after that goal has been met.
+
+`swa_gameplay_test build/swa --progression` (also `--objective`) exercises this shared driver.
+Interpreter runs with and without sound and a native run with sound must agree on final
+battery/work RAM, with no native fallback. A second driver with a different seed must emit
+the same inputs throughout. A negative run with both seats' firing disabled must reach flight
+but neither success transition within 10,000 frames, and cannot satisfy the scenario's checks.
+These checks also run in `make test-swa-gameplay`. Progression coverage and missing native
+return entries extend the shipped map while preserving old entries; strict native and
+generated-C++ lockstep validate registers, RAM and rendered frames for the new path too.
+
+### Investigating the Super Star Destroyer stage
+
+The first progression driver enters the destroyer stage but does not complete it. With the
+default settings and centred Pilot at fast throttle, shields are exhausted and failure
+subsequence 11 begins at frame 11358, well before the remaining clock expires. Slower speeds,
+constant stick deflections, short climbs, timed turns, seeded evasive steering and aiming at
+bright engine structures did not produce a successful route. These experiments are not new
+success checkpoints, and the existing opening-objective regression remains unchanged.
+
+An explicitly approved easier-settings experiment used only the cabinet's Test and Service
+inputs, without loading or saving the user's battery RAM or EEPROM files. From cold boot,
+after 1300 frames, a ten-frame Test press and 60-frame release opens the test menu.
+Seven Service presses (each with the same press/release spacing), then Test, open GAME
+ASSIGNMENT. The three sliders are GAME DIFFICULTY #1 (PLAYER), #2 (ENEMY) and #3 (TIMER),
+all initially 3/5. Starting on EXIT, Service selects the first slider; three Test presses
+cycle it through 4/5 and 5/5 to EASY 1/5. Repeat Service and three Test presses for each of
+the remaining two sliders. Two Service presses then Test return to the main menu; four
+Service presses and Test exit test mode.
+
+Screenshots confirmed all three settings at 1/5. With this setup, the initial clock is
+6015 ticks (200 whole seconds, rather than 180), and the first stage transition adds
+1950 ticks (65 seconds, rather than 60). Those differences are intentional operator settings,
+not a reason to relax the default progression scenario's exact 60-second bonus check.
+In the centred fast run, the first briefing appears at local gameplay frame 9524,
+next-stage entry at 10530 and failure at 13692. Other tested easier-setting routes also
+failed; easier settings alone have not established completion of the second objective.
+
+A short-climb variant additionally exposed a repeatable renderer fault. After the same
+operator setup, the normal progression inputs are used except for Pilot Y=227 during the
+first 60 frames of subsequence 5, then Y=127 again. AddressSanitizer on the renderer identifies
+an invalid read at `m_tgp_ram[tex_adr - 0x40000]` in `model1::push_object`. A diagnostic run
+observed texture address `0x7d082d7f`, outside the texture RAM range `0x40000-0xfffff`, with
+polygon cursor `0x2d7d18` and flags `0xbebad975`. The existing special-case rejection of
+texture `0xffffffff` did not cover this request.
+
+Tracing the CPU writes established that this was not a misaligned display list. At machine
+frame 17693 (including the operator-menu setup), command 1 at list-buffer 1 offset `0x720`
+contains texture `0x7d082d7d`, polygon `0x082d7d08` and size zero. The ROM emitter at
+`0x0c197f` copies the texture from `4[R0]`; `0x0c1984` copies the polygon from `[R0]`.
+Here R0 is `0x0d93ce`, an address inside executable program code, not an object descriptor.
+The renderer's two texture-increment flags account for the eventual `0x7d082d7f`.
+
+The observed caller explains that bad pointer. At `0x0e463a`, the ROM loads the 16-bit
+counter at `0x40[R20]` into R5, decrements it and stores it back. At `0x0e474e` it tests only
+the **byte** sign before selecting the object. Once an underflowed counter's low byte becomes
+nonnegative again, the test admits it despite the remaining upper bits. The byte-sized
+doubling at `0x0e4752` preserves those bits; at the fault R5 changes from `0xff3c` to
+`0xff78`. The indexed `movea.w` at `0x0e4755` then scales by four:
+`0x995ee + 4 * 0xff78 = 0xd93ce`. The previous rendered frame similarly used `0xd93d6`.
+This traces the malformed descriptor to actual ROM instructions in this execution; it does
+not establish what original hardware displays for these out-of-range requests, or justify
+patching the ROM's counter, scores, timers or game state.
+
+The host renderer now rejects out-of-range object texture addresses with an explicit
+diagnostic containing the frame, original request and current cursors. It also bounds the
+initial vertices and each subsequent polygon against the selected ROM/RAM allocation, and
+checks texture increments before access. VF's legitimate `0x3ffff` pre-increment seed is
+accepted, but an actual read must still fall within `0x40000-0xfffff`.
+A malformed stream stops that object, preserving
+already decoded geometry and restoring temporary view offsets; subsequent valid objects
+still render. No guessed hardware address mask or fabricated geometry is applied.
+
+`make test-swa-video` includes the real-input reproducer as well as the name-entry check.
+The reproducer performs the operator sequence above, uses the shared progression driver,
+applies the 60-frame climb, confirms the exact executable-code descriptor is emitted, and
+continues to local gameplay frame 14500, past the former crash. Renderer-instrumented
+AddressSanitizer passes the same route. Synthetic tests cover both observed malformed
+requests, texture boundaries and increments, truncated ROM/RAM vertices and records,
+unterminated streams, valid termination at the final word, and visible valid geometry before
+and after a rejected request. Shared VR HUD/video checks and the sound-enabled SWA
+progression regression also pass. The second objective remains unfinished; this is a
+renderer safety fix, not evidence of a successful new route.
+
+With the crash fixed, route discovery resumed using the same real operator settings and
+ordinary controls, without infinite shields, frozen timers or RAM writes. Tests included
+red target-box aiming, two-axis evasive orbits and smaller course-preserving variants,
+Pilot tracking of the existing blue-pixel target at four gains, torpedo pulse periods of
+12/30/60/180 frames, throttle changes and radar-image steering with both polarities.
+None reached a verified second-objective completion.
+
+Some apparent improvements were misleading. A 360-frame orbit with amplitude 60 survived
+until local frame 18976, but screenshots showed empty space outside the trench for much of
+that time. Pilot tracking at half the Gunner ADC offset, with 30-frame torpedo pulses,
+survived to timeout and failure at frame 19870; its scores stopped increasing and it also
+went off course. Longer survival alone is not route progress. The briefing explicitly
+identifies the **Main Engine** as the target, so the unresolved problem remains following
+the trench to that objective, not merely avoiding damage.
+
+Read-only RAM sampling and CPU write tracing also located the authoritative shield word
+at `0x40f772` (16-bit); the high byte at `0x40f31f` is a copied display/state value, not
+the authoritative counter. The ROM copies the word at `0x0c43e9`, and subtracts damage
+at `0x0c7f66`. The centred easy run shows repeated `0x40` deductions through caller
+`0x0c736b`, plus occasional `0x100` deductions through `0x0c7f33`; the latter follows
+a negative geometry-query result in the routine at `0x0c7ef7`. These observations are
+diagnostics only: no shield values were changed, and no experimental route was promoted
+into the shared progression driver.
+
+### Tracing the destroyer course
+
+The next investigation measured **forward position**, rather than treating survival time or
+score as evidence of following the trench. The ship object is addressed by
+`0x400000 | read16(0x40f408)`; it was `0x40bc80` in these runs. Its offsets
+`+0x0c`, `+0x10` and `+0x14` hold float32 world X/Y/Z. The 16-bit angles at
+`+0x18`, `+0x1a` and `+0x1c` are pitch, yaw and roll, in 65536 units per revolution.
+The movement routine at `0x0c69dc` transforms the forward velocity by those angles and
+integrates the resulting position. The integer world origin at
+`0x40f736/0x40f73a/0x40f73e` was `(-281600, -56649, 384000)`.
+Those values allow trajectories to be compared in local trench coordinates.
+
+With the approved easy settings, stage 5 starts at local gameplay frame 10530.
+At frame 10560 the ship is approximately `(-281650, -55439, 379550)`, or
+`(-50, 1210, -4450)` relative to the origin. Centred inputs hold yaw almost zero
+and advance down +Z. By frame 11340 the ship reaches local Z=51010 with shield
+word still 1472. Near local Z=55200 it encounters an obstruction; later positions and
+headings show repeated reversals in the same region, not continuous passage along the trench.
+
+Tracing the actual terrain queries at `0x0c6f7d` explains why looking only at the ship
+centre misses the first collision. At machine frames 15320–15326 the ROM tests three
+swept segments, including a wingtip in the adjacent grid cell. The centre still lies on
+one side of the cell boundary while that wing reaches the neighbouring wall. The two
+queried cells encode collision meshes `0x58d` and `0x5a3`. The read-only decoder reproduces
+an obstruction for the swept wing envelope, although the corresponding centre-only
+segment is clear.
+
+The active collision-grid selector at `0x40f77a` is 6; the dispatch selector at
+`0x40f77b` is 25. The table at program-ROM `0x0a06d2` selects the grid at `0x081a40`.
+The lookup at `0x0c6e6c` subtracts the world origin and indexes an eight-column,
+224-row grid with 1024-unit cells and a 4096-unit offset. Each word contains two
+16-bit collision-mesh indices; `0xffff` means no mesh. Coprocessor data-ROM word
+`0x10` points to the mesh directory. Each directory pair contains a quad count and
+word address; each quad contains four XYZ vertices, a plane equation and one extra
+word. This is the format already decoded by the shared `intercept` implementation.
+It is not a table of ready-made Pilot waypoints.
+
+A session-local planner used that geometry to derive candidate paths, checking swept
+segments with an expanded envelope and exploring lateral and vertical changes. A separate
+experimental driver reads the ship's pose and supplies clamped normal Pilot ADC inputs;
+it never writes the pose, shields, timers, scores or stage state. In a checked run,
+the first obstruction is passed with shields unchanged: local Z advances from 55295
+at gameplay frame 11400 to 76698 at 11700, with the shield word still 1472.
+The path follower subsequently reaches approximately local Z=102000 while shields remain,
+before losing the course at another constriction. This is measurable down-trench progress,
+unlike the earlier empty-space evasive runs.
+Repeating that run produced exactly the same 41 sampled pose/shield records; the maximum
+sampled forward distance with shields remaining was 101702.88 units. The ordinary
+sound-enabled progression regression still matches silent, interpreter and native execution.
+
+Neither the offline path nor the feedback controller is a verified solution. Larger
+clearance margins, different lookahead distances, feedback gains and slower throttles
+did not establish second-objective completion. The mesh planner's ideal swept path
+does not guarantee the real ship can track it through the game's steering dynamics and
+collision responses. No experimental follower replaces the shared progression scenario.
+That localized the next investigation to the roughly 90000–102000-unit section,
+rather than another blind search over whole-stage inputs.
+
+### Correcting the experimental trench follower
+
+Two-frame pose samples and the ROM's actual collision-result branch at `0x0c712a`
+revealed an earlier divergence. The original follower first hits terrain at gameplay
+frame 11711, local Z approximately 77438, with mesh `0x618`. Immediately before the
+hit, altitude is 1122 while the future waypoint is 944. The collision changes the
+heading, and later collisions compound the error. The roughly 102000-unit reversal
+was therefore not the first tracking failure.
+
+The steering trace explains why increasing a generic feedback gain was not enough.
+The two Pilot axes have different semantics:
+
+- `0x0c66e8` reads Pilot Y through `0x0f3376`, multiplies its normalized value by
+  `0x92` (146), negates it and stores an **absolute pitch target**. The subsequent
+  response moves actual pitch towards that target, approximately one sixteenth of
+  the angular error per update, with a step limit. Treating pitch input as a command
+  proportional to desired-minus-actual pitch introduces an unwanted angular offset.
+- Pilot X instead changes an **integrated yaw target**. `0x0c67a2` adjusts the
+  normalized input by forward speed; `0x0c6712` then incorporates auxiliary steering
+  state and subtracts six times the result from the yaw target. Actual yaw follows
+  that target with a different response. It is not the same controller as pitch.
+
+The ROM also calibrates and dead-zones the ADC values before steering. At `0x0c0709`
+it subtracts the stored axis centre, multiplies by 32, divides by the stored scale
+and adds 128. The operator setup used here has centre 128 and scale 96, with input
+inversion enabled. `0x0f3376` maps calibrated values below 128 relative to 128, maps
+values above 136 relative to 136, and returns zero in between; the result is limited
+to -56 through 56. Small changes around raw stick centre therefore do not produce
+the assumed proportional steering command.
+
+The session-only correction searches the legal 27–227 ADC range through this
+read-only calibration mapping. Pitch selects the input closest to
+`-desired_pitch / 146`, rather than feeding back pitch error through the old stick
+gain. Yaw uses heading-error feedback to request a normalized turning input, accounts
+for the ROM's speed-dependent gain, and inverts the same calibration/dead-zone
+mapping. Its normalized request is limited to +/-28, below the strong-input
+threshold of the separate roll-manoeuvre path. This remains an approximate follower,
+not a replacement implementation of the game's flight dynamics.
+
+With the existing 240-unit-clearance candidate path and 2000-unit lookahead, the
+corrected controller clears both the first divergence and the later constriction.
+An explicit check requires successive local-Z checkpoints while the shield word is
+greater than 1 and no greater than the stage-entry value 1472. It also rejects any
+terrain-hit callback from gameplay frame 11001 through the last checkpoint:
+
+| Local-Z checkpoint | Gameplay frame | Actual local Z | Shield word | Terrain hits in checked interval |
+|---|---|---|---|---|
+| 110000 | 12211 | 110075.25 | 960 | 0 |
+| 120000 | 12387 | 120103.91 | 576 | 0 |
+| 130000 | 12557 | 130090.44 | 320 | 0 |
+
+The maximum per-frame forward distance with that live-shield condition is
+138102.06 units, compared with the old follower's sampled 101702.88. Rendered
+checkpoint images show continued flight inside the trench, not escape into empty
+space. Two complete runs produce byte-identical telemetry and the same per-frame
+pose/angle, analog-input and shield hash, `a70c08e620116d35`. The ordinary progression
+regression still matches interpreter, silent and sound-enabled native execution.
+
+This is **not second-objective completion**. Shield loss remains through other ROM
+callers, including `0x0e3fde`, `0x0e3666` and `0x0c7f33`; it must not all be labelled
+terrain collision. The run eventually fails at frame 13062. The useful next trace is
+those remaining damage sources and target engagement along the now-traversable
+section. The corrected probe, candidate path, logs and checkpoint images remain
+session-local; the production progression scenario is unchanged. All steering still
+uses ordinary cabinet inputs, with no writes to shields, timers, scores or ship pose.
+
+### Separating trench damage and improving target engagement
+
+The next probe kept the same operator settings, candidate path and Pilot controller,
+and traced the remaining shield deductions before changing Gunner aiming. There are
+three distinct mechanisms in the measured section:
+
+| Damage return address | Deduction | Observed source |
+|---|---|---|
+| `0x0e3fde` | `0x80` | Fixed expanding hazard, updated by `0x0e3f08` |
+| `0x0e3666` | `0x80` | Another fixed hazard, updated by `0x0e354c` |
+| `0x0c7f33` | `0x100` | Moving collision sphere, including turret bullets and a larger projectile |
+
+These are the low 16 bits of the damage argument; the upper register bits can be
+stale float data. The fixed hazards test horizontal separation against 512 units
+and vertical separation against their current radius. Examples are local
+`(512, 512, 86528)` and `(512, -512, 110080)`, with radius 768 at impact.
+The moving-object test follows the linked sphere lists and compares distance with
+the sphere radius. Its `+0x2a` field is a **list link**, not the firing object's ID.
+
+To establish provenance rather than guess from colour, the probe records allocations
+at `0x0c0a30`, invalidates old records whenever a slot is reused, and records the
+owner when `0x0e59ff` finishes creating a turret bullet. In the control run, the hit
+at gameplay frame 11957 comes from a radius-30 bullet created at frame 11879 by
+turret `0x406140`. The later impacts at 12281, 12427 and 12737 likewise trace to
+turret bullets. The improved run avoids the first and third of those impacts, but
+still encounters bullets from other turrets.
+
+The radius-180 impact in the improved run is a different projectile, allocated
+through return address `0x0e494b` at frame 12519 and hitting at 12537. Its creation
+routine at `0x0e4945` sets a forward speed of 240 and radius 180, then links it into
+the moving-object list. It must not be called another radius-30 turret bullet or
+a terrain collision.
+
+Destroying an object also does not necessarily remove its danger immediately.
+Hazard `0x405e20` enters its destruction routine at frame 12320 but still damages
+the ship at 12346. A turret's destruction animation also does not undo an already
+fired bullet: the improved run's impact at 12263 comes from turret `0x405e70`, fired
+at 12207, one frame before that turret's destruction animation finishes at 12264.
+The remaining damage
+cannot be solved merely by counting scored hits.
+
+Two visual alternatives were measured and rejected. Recognizing red target boxes
+reduced live-shield progress to about 130222 units; connected red-pixel components
+also did worse than the existing blue-pixel heuristic. Neither reliably distinguishes
+the dangerous objects from other red geometry and effects.
+
+The successful session-local alternative uses the game's own **read-only shootable
+list**, from `0x40ed04` to the pointer at `0x40ed00`, with explicit pointer bounds.
+The probe captures object-to-camera matrices as the ROM emits display-list commands,
+matches the object IDs against that list, and projects their translated origins.
+It selects a reachable forward target using depth plus an angular-offset penalty.
+This avoids mistaking arbitrary coloured effects for targets.
+
+Projection calibration matters here too. The live display-list header specifies a
+200-pixel zoom on both axes, not the initial experimental estimate of 300. Its viewport
+maps to centre `(248, 191)` after the renderer's Y conversion. The resulting screen
+coordinates are converted through the already measured Gunner reticle slopes,
+1.41 horizontal and 0.93 vertical pixels per ADC unit, then clamped to 27–227.
+The chosen input is held between actual scene updates. Continuous lasers and the
+existing torpedo pulses remain unchanged. The probe never injects a hit, changes a
+target's health or writes the shootable list.
+
+At matching forward checkpoints, the result is:
+
+| Local-Z checkpoint | Control shield | Improved shield | Control turret destructions | Improved turret destructions | Control / improved turret shot attempts |
+|---|---|---|---|---|---|
+| 110000 | 960 | 1216 | 2 | 9 | 38 / 10 |
+| 120000 | 576 | 832 | 2 | 12 | 47 / 13 |
+| 130000 | 320 | 832 | 2 | 13 | 49 / 14 |
+
+Destructions are observed at the ROM's completed turret-destruction branch, not
+inferred from score. Shot counts are attempts at the turret creation routine's
+entry, not a claim that every allocation succeeded. Across the complete runs,
+turret destructions increase from 2 to 15 and shot attempts decrease from 64 to 23,
+although the runs have different lengths. The matched checkpoints are the stronger
+comparison.
+
+The session regression explicitly requires at least 832 shield units and 13 turret
+destructions, with no more than 14 turret shot attempts, at local Z=130000. It also
+requires live-shield progress beyond 145000 and the existing no-terrain-hit check
+from gameplay frame 11001 through the 130000 checkpoint. Two runs pass with
+byte-identical telemetry and hash `fc56a468eb6db911`. Maximum per-frame live-shield
+distance increases from 138102.06 to **148893.06** units. Checkpoint images still show
+flight inside the trench. A negative control holds the Gunner at ADC `(127, 127)`
+through normal inputs; the improvement assertion rejects it at the 130000 checkpoint
+with shield 320, zero turret destructions and 53 shot attempts. The ordinary
+sound-enabled progression regression continues to match silent, interpreter and
+native execution.
+
+This remains an experimental diagnostic, not a new shared progression checkpoint.
+The next terrain hit occurs at frame 12773, after the 130000 checkpoint, and the
+run eventually fails at frame 13240 without completing the second objective.
+Remaining work is to handle the larger launcher's projectile, engage hazards early
+enough for their dangerous death phase to finish, and resolve the subsequent
+deflection/collision sequence. The targeting probe, repeatable session make target,
+baseline, rejected candidates and verified evidence are preserved outside the
+worktree; the production driver is unchanged.
+
+### Avoiding the large launcher volley
+
+The radius-180 projectile that hit at gameplay frame 12537 now has a traced
+launcher, not just an allocation site. At the end of creation (`0x0e4a56`), register
+R11 identifies the projectile and R20 identifies its owner. The offending owner is
+`0x405ce0`, updated by `0x0e3f08`, at world
+`(-280576, -59721, 517632)`: local `(1024, -3072, 133632)`. Its firing phase is
+`0x0e3b39`, reaching the shared projectile creator through `0x0e3c7d`.
+The adjacent launcher is a separate source.
+
+The launcher's byte countdown at `+0x44` resets to 64 and emits seven shots as it
+falls through 60, 56, 52, 48, 44, 40 and 36. In this run those launches occur every
+eight gameplay frames, from 12519 through 12567. The first projectile,
+`0x404890`, starts at `(-280536, -59716, 517132)` with approximate velocity
+`(0, 2.95, -239.98)`, then hits 18 frames later. This is moving-sphere damage,
+not a terrain collision or the fixed hazard's expanding-radius test.
+
+Prioritizing launcher targets did not prevent this impact. One initial candidate
+selected the other launcher handler; even after correcting that selection, the
+target-origin capture did not supply the offending launcher as a reachable target
+before the hit. This does not establish that it is generally invulnerable or
+unshootable. The successful alternative leaves Gunner engagement unchanged and
+alters only the Pilot's candidate path.
+
+The session-local path generator tested bounded offsets against the decoded
+collision mesh with the existing 240-unit swept-clearance check. Horizontal
+offsets of either 512 units and a positive-Y offset of 384 units were rejected.
+A negative-Y offset of **384 units** passed: it ramps in smoothly over local
+Z=124000–128000, holds through 134000, and returns to the original course by
+138000. The follower tracks this path through ordinary calibrated Pilot inputs;
+there are no shield, time, projectile, collision or game-state writes.
+
+The gameplay assertion checks the ROM's actual collision callbacks, not just the
+offline mesh estimate. It requires at least seven shots from this exact launcher,
+zero large-projectile impacts throughout the run, no terrain hits in the modified
+124000–138000 interval, shield at least 832 at 135000, and live-shield progress
+past 150000. The original 130000 engagement assertions also remain enabled.
+Two complete runs must produce byte-identical telemetry and per-frame pose/input/
+shield hashes. Removing only the path offset is the negative control: the same
+launcher again produces the frame-12537 impact and the avoidance assertion fails.
+
+With the dodge, the ship retains shield **832** through the former impact and the
+135000 checkpoint, and reaches maximum live-shield local Z=**161199.00**.
+The volley still fires; it has been avoided, not disabled. Checkpoint screenshots
+also confirm continued trench flight. Sampled projectile-centre distances are
+diagnostic only, not a continuous swept-collision proof.
+
+This does not solve the rest of the course. The fixed hazard at `0x0e3666` still
+deducts 128 shield units at frame 12644, followed by the first later terrain hit
+at 12759, beyond the modified interval. The run eventually fails at 13568 without
+completing the second objective. The probe, path generator, repeatable
+`test-swa-stage2-projectile` session make target, baseline, rejected candidates,
+negative control and verified evidence are preserved outside the worktree.
+The ordinary sound-enabled progression regression still matches interpreter,
+silent and native execution; the shared production driver remains unchanged.
+
+### Avoiding the fixed hazard at frame 12644
+
+The next shield deduction comes from object `0x405c40`, updated by `0x0e354c`,
+at world `(-280576, -60745, 522752)`: local `(1024, -4096, 138752)`.
+It is a fixed expanding hazard, not another launcher projectile. Its expansion
+phase byte at `+0x42` is 2 and its current and maximum radius words at
+`+0x38/+0x3a` are both 768 at impact.
+
+The ROM's collision branch at `0x0e3600` measures distance in the X/Z plane
+against **512**, then converts the absolute Y difference to an integer and
+compares it against the **current radius**. The previous description had these
+dimensions reversed; it is corrected above. At gameplay frame 12644, the old
+launcher-dodge route places the ship at approximately
+`(-280582.62, -61464.33, 522260.69)`. Horizontal distance is about 491 units and
+vertical separation is only 719.33, so both tests pass. The damage call through
+`0x0e365b`, returning to `0x0e3666`, deducts 128 shield units: 832 becomes 704.
+
+Read-only snapshots immediately before and after that call show unchanged ship
+position and angle bytes. The branch sets the ship's temporary invulnerability
+word to `0x1e01`; it does not directly knock the ship away. This rules out an
+immediate positional/rotational kick, not every possible later effect of damage.
+Avoiding this hazard also does not by itself remove the subsequent terrain hits.
+
+The successful session-local adjustment adds another **384-unit negative-Y
+offset** to the already verified launcher-dodge course. A smooth ramp starts at
+local Z=135000 and reaches the full offset at 138000, holds through 139000, and
+returns to the previous course by 142000. The modified segments pass the same
+240-unit swept mesh-clearance check. Larger vertical and horizontal candidates
+were rejected by that check. A smaller 192-unit descent also avoided the hazard,
+but its full run reached only 156260.81 units with live shields, so the 384-unit
+candidate was retained. Gunner engagement and all firing inputs are unchanged.
+
+The new regression observes the exact hazard at seven update samples inside the
+512-unit horizontal collision window, with its radius fully expanded to 768.
+The minimum sampled vertical separation is **1119.35** units; the actual ROM
+collision callback records **zero impacts** from this hazard throughout the run.
+These sampled distances supplement, rather than replace, the collision checks.
+
+| Measurement | Launcher dodge only | With fixed-hazard dodge |
+|---|---|---|
+| Shield at local Z=140000 | 704 | **832** |
+| Fixed-hazard impacts | 1, at frame 12644 | **0** |
+| Terrain hits in the modified 135000–142000 interval | 0 | **0** |
+| Maximum live-shield local Z | 161199.00 | **162800.75** |
+
+The existing engagement and launcher-volley assertions still pass: the identified
+launcher fires its seven-shot volley and no large projectile hits. Two complete
+hazard-dodge runs have byte-identical telemetry and hash `f1db41bef0a9c43b`.
+The negative control removes only this additional offset, restores the original
+frame-12644 hazard hit with unchanged pose and shield 704, and correctly fails the
+new avoidance assertion. The session make targets
+`test-swa-stage2-hazard` and `test-swa-stage2-hazard-negative`, path generator,
+courses, traces, disassembly and screenshots are preserved outside the worktree.
+The ordinary progression test still matches interpreter, silent and sound-enabled
+native execution. There are no ROM, shield, timer, collision or game-state patches.
+
+This is not yet a clean passage to 150000. The first later terrain hit is at
+frame 12737, and ten terrain callbacks occur between local Z=142000 and 150000.
+The ship reaches 150023.56 with shield 640 but eventually fails at frame 13636.
+The next separate problem is the follower's tracking through that later
+constriction, not the now-avoided fixed hazard. The shared production driver
+remains unchanged.
+
+### Clearing the frame-12737 terrain collision and handing over to a human
+
+The first terrain hit after the fixed-hazard dodge is a real ceiling intersection,
+not a wing-footprint guess. At frame 12737, the ROM's terrain query addresses mesh
+`0x84c` and moves from local-to-cell Y=-5128.86 to -5105.82, crossing its Y=-5120
+plane. The follower has begun climbing because its 2000-unit lookahead points at
+a higher part of the planned path. Reducing lookahead alone, slowing the throttle,
+and adding pitch-lag compensation did not establish a clean passage; some also
+introduced a previously avoided turret-bullet hit. Those experiments were rejected.
+
+Inspection of the supposedly clear path exposed two defects in the **session-local
+offline planner**, not changes needed to the game's collision execution:
+
+- A triangle stored as a quad with a repeated vertex has a zero-length edge.
+  Counting its zero determinant as a positive sign rejected otherwise entirely
+  negative-winding interior intersections. The original planned climb from
+  `(-1280, -5200, 144640)` to `(-1280, -5072, 145152)` actually crosses a
+  repeated-vertex ceiling triangle in mesh `0x84b`.
+- Five parallel swept lines do not prove clearance around their centre. A centre
+  line and its offset can remain on opposite sides of a sidewall for the entire
+  segment without either line crossing it.
+
+The checker now accepts either consistent nonzero sign while treating zero edges
+as neutral. It also probes radial centre-to-offset segments at each endpoint and
+the midpoint, in addition to the parallel sweeps. ROM-backed Python regressions
+cover the missed triangle and a sidewall at `(-512, -6016, 145152)`. These are
+conservative sampled checks, not a general continuous swept-volume proof; the
+actual game's collision callbacks remain the gameplay acceptance test.
+
+A bounded local planner regenerates the corridor from local Z=139520 to 160000
+with 320-unit clearance samples, passing lower through the constriction instead
+of attempting the false ceiling opening. The earlier path is preserved. Beyond
+160000 it holds the final lane/altitude without claiming that unplanned tail is
+safe. The successful run uses the **unchanged** calibrated Pilot follower and
+Gunner engagement; no precision-controller or slower-throttle experiment is enabled.
+
+| Check | Old hazard-dodge route | Corrected corridor |
+|---|---|---|
+| Original terrain hit | Frame 12737, mesh `0x84c` | No hit at that frame |
+| Terrain callbacks in local Z=140000–150000 | Nonzero | **258 queries, zero hits** |
+| Shield at local Z=150000 | 640 | **832** |
+| Maximum live-shield local Z | 162800.75 | **174637.12** |
+
+The new session regression requires that exact zero-hit interval, active terrain
+queries and shield at least 832 at 150000, as well as all previous engagement,
+fixed-hazard and launcher-volley checks. Two complete runs have byte-identical
+telemetry, identical exported input recordings and hash `9d6f8542a701766a`.
+The old course is an expected-failure control: it reproduces the frame-12737
+intersection and fails the passage assertion. The session targets are
+`test-swa-stage2-terrain` and `test-swa-stage2-terrain-negative`. The first later
+terrain collision is now frame 12973, beyond the 160000 planning boundary; the
+run eventually fails at 13902. This still does not complete the second objective.
+
+For human investigation, the probe now records the entire cabinet-input prefix,
+including the real Test/Service EASY setup. The desktop host's experimental
+`--replay-inputs` option executes that prefix from a cold boot, without rendering
+or frame pacing, and pauses for a manual handoff. The current
+`build/swa-trench.inputs` stops after gameplay frame **12670**, or **16600 machine
+frames**, with shield 832 before the constriction. Both native and interpreter
+hosts verify its battery/work-RAM hash `c16a83c62483b8db` in about 13–14 seconds.
+
+Pressing P resumes with the existing keyboard/gamepad controls for both seats.
+The first live-input sample is neutral with no buttons held, confirming that
+recorded steering and firing no longer drive the game. Desktop trace assertions
+check that no game frame advances while paused, then frames advance after P.
+A deliberately bad checksum refuses handoff. Replay mode skips existing
+battery/EEPROM saves and suppresses saves/settings writes even after manual play;
+before/after file checks also pass with the host test's `M1_SAVE` enabled.
+Relaunching the command retries from the same phase; F3 remains an ordinary reset.
+This replays real inputs, not a partial RAM snapshot or forced game state.
+
+The host/parser tests, ordinary desktop-startup smoke test, SWA controls test,
+gamepad test and sound-enabled progression regression pass. The latter still
+matches interpreter, silent and native execution. Evidence, rejected candidates,
+corrected planner and recording are preserved in the session; only the gated
+replay facility is added to the desktop host. Production scripted progression
+and the game's collision emulation remain unchanged.
 
 ### The name-entry priority bug scripts did not notice
 
@@ -873,18 +1407,18 @@ The main local checks are:
 - `make test-swa-boot`: repeated interpreter boot, FIFO invariants, IRQ timing and audio pacing.
 - `make test-swa-controls`: button routing and analog ranges against the game's input test.
 - `make test-swa-dsb`: serial receiver, MPEG controls, real music trigger and audio comparison.
-- `make test-swa-gameplay`: all four scenarios with sound, silent/sound RAM agreement, and
+- `make test-swa-gameplay`: all five scenarios with sound, silent/sound RAM agreement, and
   native runs with no interpreter fallback; also deterministic Gunner inputs and on-screen
   independent aiming, plus continuation checks with the coin or Start withheld. An
-  interpreter-only visual driver completes the opening objective, with a no-firing control.
+  shared visual progression driver completes the opening objective, with a no-firing control.
 - `make test-model1-video test-swa-video`: synthetic HUD priority and real name-entry rendering.
-- `make swa-native-lockstep swa-lockstep`: all four complete scenarios against the interpreter,
+- `make swa-native-lockstep swa-lockstep`: all five scenarios against the interpreter,
   36,000 frames each.
 
 These are ROM-backed local checks where applicable, not evidence that every cabinet behaviour
 or every mission branch has been validated. The Gunner's buttons and axes are checked in the
 input test and scripted play, and a solo failed-mission continue/restart is checked.
-The opening objective and next-stage entry are now checked on the interpreter, but later
+The opening objective and next-stage entry are now checked in all three execution backends, but later
 objectives, mission victories and team-mode continuation still lack comprehensive checks.
 Camera/mode RAM is still unidentified, so boot skipping and SWA-specific widescreen
 behaviour are not established. Release packaging remains VR-only.

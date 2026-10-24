@@ -1,9 +1,9 @@
-// Star Wars Arcade's scripted play (src/games/swa/script.cpp) on the interpreter, all four scenarios
-// with checks on: credits, mission, flight, hits, game over and back to attract; Rebel Attack ranks
-// the score, while Training leaves the rankings unchanged.
+// Star Wars Arcade's scripted play (src/games/swa/script.cpp) on the interpreter, all five scenarios
+// with checks on: credits, mission, flight and hits; progression completes the opening objective,
+// while the other runs reach game over and attract. Rebel Attack ranks the score, Training does not.
 // The default run also checks the Digital Sound Board's in-game music (a looping stream other than
 // the attract theme), and that a silent run (the headless tools': model1cov, model1lock) plays the
-// same game as one with sound. All four scenarios also run on the native recompile of the shipped map
+// same game as one with sound. All five scenarios also run on the native recompile of the shipped map
 // (assets/games/swa/swa_map.txt), with no interpreter fallback.
 #include "../../../src/games/script.h"
 #include "../../../src/games/swa/profile.h"
@@ -159,79 +159,43 @@ void continue_requires_inputs(const std::string &dir)
 	}
 }
 
-void first_objective(const std::string &dir)
+void progression_requires_firing(const std::string &dir)
 {
-	for (bool firing : { false, true }) {
-		model1 m(load_regions(dir, ID));
-		m.enable_sound();
-		m.reset();
-		auto play = game::make_auto_play(ID, "gunner", 12345, false);
-		assert(play);
-		int gunner_x = 127, gunner_y = 127;
-		bool flying = false, briefing = false, next_stage = false, next_flight = false;
-		unsigned briefing_time = 0;
-		for (int f = 1; f <= 10000; f++) {
-			auto in = play->frame(f, m);
-			if (f >= 1600) {
-				in.analog[0] = in.analog[1] = 127;
-				in.analog[2] = 28;
-				in.analog[4] = gunner_x;
-				in.analog[5] = gunner_y;
-				in.pressed[1] = firing ? PILOT_LASER | GUNNER_LASER : 0;
-				if (firing && f % 90 < 6) in.pressed[1] |= PILOT_TORPEDO | GUNNER_TORPEDO;
-			}
-			for (size_t c = 0; c < in.analog.size(); c++)
-				if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
-			for (size_t p = 0; p < in.pressed.size(); p++) m.m_inputs[p] = uint8_t(~in.pressed[p]);
-			m.set_drawing(f % 4 == 0);
-			m.run_frame();
-			m.m_audio_out.clear();
-			// Blue target pixels nearest the centre give a deliberately simple visual aim.
-			// The calibrated reticle moves 1.41/0.93 pixels per Gunner X/Y input unit.
-			if (f >= 3300 && f % 4 == 0) {
-				int best = 1000000, target_x = 248, target_y = 191;
-				for (int y = 75; y < 275; y++)
-					for (int x = 105; x < 390; x++) {
-						const uint32_t pixel = m.frame().pix(y, x);
-						const unsigned r = (pixel >> 16) & 255, g = (pixel >> 8) & 255, b = pixel & 255;
-						if (b < 100 || 2 * b < 3 * r || 5 * b < 6 * g) continue;
-						const int distance = (x - 248) * (x - 248) + (y - 191) * (y - 191);
-						if (distance < best) { best = distance; target_x = x; target_y = y; }
-					}
-				gunner_x = std::clamp(int(127 - (target_x - 248) / 1.41), 27, 227);
-				gunner_y = std::clamp(int(127 - (target_y - 191) / .93), 27, 227);
-			}
-			const auto &ram = m.nvram();
-			if (ram[0xf008] != 13) continue;
-			const unsigned time = ram[0xf334] | ram[0xf335] << 8;
-			if (ram[0xf009] == 3 && time != 0xffff && time < 180 * 30) flying = true;
-			if (flying && !briefing && ram[0xf009] == 4) {
-				assert(time != 0xffff && time > 0);
-				briefing = true;
-				briefing_time = time;
-				printf("SWA objective (%s): Super Star Destroyer briefing at frame %d, time %u\n",
-					firing ? "firing" : "no firing", f, time);
-			}
-			if (briefing && !next_stage && ram[0xf009] == 5) {
-				assert(time == briefing_time + 60 * 30);
-				next_stage = true;
-				printf("SWA objective: next stage at frame %d, 60-second bonus (%u -> %u)\n",
-					f, briefing_time, time);
-			}
-			if (next_stage && time < briefing_time + 60 * 30) {
-				assert(firing);
-				next_flight = true;
-				puts("SWA objective: next-stage clock counting down");
-				break;
-			}
+	model1 m(load_regions(dir, ID));
+	m.enable_sound();
+	m.reset();
+	auto play = game::make_auto_play(ID, "progression", 12345, true);
+	auto repeat = game::make_auto_play(ID, "progression", 98765, true);
+	assert(play && repeat && play->min_frames() == 10000 && !play->finish().empty());
+	bool flying = false;
+	for (int f = 1; f <= 10000; f++) {
+		auto in = play->frame(f, m);
+		const auto again = repeat->frame(f, m);
+		assert(in.analog == again.analog && in.pressed == again.pressed);
+		for (int c : { 3, 6, 7 }) assert(in.analog[c] == -1);
+		if (f >= 1600) {
+			assert(in.analog[0] == 127 && in.analog[1] == 127 && in.analog[2] == 28);
+			assert(in.analog[4] >= 27 && in.analog[4] <= 227 && in.analog[5] >= 27 && in.analog[5] <= 227);
+			assert(in.pressed[1] == (f % 90 < 6 ?
+				PILOT_LASER | GUNNER_LASER | PILOT_TORPEDO | GUNNER_TORPEDO : PILOT_LASER | GUNNER_LASER));
+			in.pressed[1] = 0;
 		}
-		assert(flying);
-		if (firing) assert(briefing && next_stage && next_flight);
-		else {
-			assert(!briefing && !next_stage);
-			puts("SWA objective: withholding both seats' firing prevents completion");
+		for (size_t c = 0; c < in.analog.size(); c++)
+			if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
+		for (size_t p = 0; p < in.pressed.size(); p++) m.m_inputs[p] = uint8_t(~in.pressed[p]);
+		m.run_frame();
+		m.m_audio_out.clear();
+		const auto &ram = m.nvram();
+		if (ram[0xf008] == 13) {
+			if (ram[0xf009] == 3) flying = true;
+			assert(ram[0xf009] != 4 && ram[0xf009] != 5);
 		}
+		assert(play->check(f, m) == repeat->check(f, m));
+		// The missing objective must remain an error, even if the run has not failed yet.
+		assert(!play->finish().empty());
 	}
+	assert(flying);
+	puts("SWA progression: deterministic controls across seeds; withholding firing prevents completion");
 }
 
 struct music
@@ -269,11 +233,16 @@ uint64_t run(const std::string &dir, const std::string &scenario, bool sound, in
 	m.reset();
 	if (!native) m.run_cpu = [&](int c) { m.cpu().run(c); };
 	auto play = game::make_auto_play(ID, scenario, 12345, checks);
+	auto repeat = scenario == "progression" ? game::make_auto_play(ID, scenario, 98765, false) : nullptr;
 	assert(play);
 	if (checks) assert(frames >= play->min_frames());
 	bool flying = false, over = false;
 	for (int f = 1; f <= frames; f++) {
 		const game::script_inputs in = play->frame(f, m);
+		if (repeat) {
+			const auto again = repeat->frame(f, m);
+			assert(in.analog == again.analog && in.pressed == again.pressed);
+		}
 		for (size_t c = 0; c < in.analog.size(); c++)
 			if (in.analog[c] >= 0) assert(m.set_analog_input(c, uint8_t(in.analog[c])));
 		for (int p = 0; p < 3; p++) m.m_inputs[p] = uint8_t(~in.pressed[p]);
@@ -301,6 +270,17 @@ uint64_t run(const std::string &dir, const std::string &scenario, bool sound, in
 	return ram_hash(m);
 }
 
+void progression(const std::string &dir)
+{
+	progression_requires_firing(dir);
+	const auto interpreter = run(dir, "progression", true, 10000, true);
+	const auto silent = run(dir, "progression", false, 10000, true);
+	assert(interpreter == silent);
+	const auto native = run(dir, "progression", true, 10000, true, nullptr, true);
+	assert(interpreter == native && rec::fallback_count() == 0);
+	puts("SWA progression: interpreter, silent and native gameplay with sound match");
+}
+
 }
 
 int main(int argc, char **argv)
@@ -312,8 +292,8 @@ int main(int argc, char **argv)
 	assert(!game::make_auto_play(ID, "no-such-scenario", 1, false));
 	auto quiet = game::make_auto_play(ID, "", 1, false);
 	assert(quiet && quiet->finish().empty());
-	if (argc > 2 && std::string(argv[2]) == "--objective") {
-		first_objective(argv[1]);
+	if (argc > 2 && (std::string(argv[2]) == "--objective" || std::string(argv[2]) == "--progression")) {
+		progression(argv[1]);
 		return 0;
 	}
 	scripted_axes();
@@ -357,6 +337,6 @@ int main(int argc, char **argv)
 	assert(run(argv[1], "continue", true, 36000, true, nullptr, true) == continued);
 	assert(rec::fallback_count() == 0);
 	puts("SWA continue: interpreter and native gameplay with sound match");
-	first_objective(argv[1]);
+	progression(argv[1]);
 	puts("SWA gameplay tests passed");
 }

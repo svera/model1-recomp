@@ -2,9 +2,9 @@
 GAMES += swa
 swa_HOST_REC = native
 # the scripted runs model1cov records as hints for the recompile (make swa-coverage)
-swa_COV_SCENARIOS = default gunner training continue
+swa_COV_SCENARIOS = default gunner training continue progression
 swa_COV_FRAMES ?= 36000
-swa_LOCK_SCENARIOS = default gunner training continue
+swa_LOCK_SCENARIOS = default gunner training continue progression
 swa_LOCK_FRAMES ?= 36000
 
 $(OBJ)/tests/games/swa/profile_test.o $(OBJ)/tests/games/swa/controls_test.o $(OBJ)/tests/games/swa/dsb_test.o: CXXFLAGS += $(SDL_CFLAGS)
@@ -43,5 +43,6 @@ test-swa-gameplay: $(BIN)/swa_gameplay_test swa-regions
 
 test-swa-video: $(BIN)/model1_video_test swa-regions
 	$(BIN)/model1_video_test build/swa --swa-priority
+	$(BIN)/model1_video_test build/swa --swa-object-bounds
 
 .PHONY: test-swa-profile test-swa-romset test-swa-boot test-swa-controls test-swa-dsb test-swa-gameplay test-swa-video

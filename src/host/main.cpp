@@ -12,6 +12,7 @@
 #include "gpu_compose.h"
 #include "controls.h"
 #include "gamepads.h"
+#include "input_replay.h"
 #include "../machine/parallel.h"
 #include "../rt/rec_rt.h"
 #ifdef M1_NATIVE
@@ -740,6 +741,8 @@ int main(int argc, char **argv)
 	bool interp = rec_table_size == 0;   // (a build without the game's recompiled C++ has only the interpreter)
 #endif
 	bool arg_arcade = false;
+	std::string replay_path;
+	input_replay::recording replay;
 	std::string arg_roms;   // --roms <folder>: where the player's zip is (over M1_ROMS and settings.ini's roms_folder)
 	for (int i = 1; i < argc; i++) {
 		std::string a = argv[i];
@@ -748,6 +751,7 @@ int main(int argc, char **argv)
 		else if (a.rfind("--roms=", 0) == 0) arg_roms = a.substr(7);
 		else if (a == "--interp") interp = true;      // MAME's V60 interpreter instead of the recompiled code
 		else if (a == "--arcade") arg_arcade = true;  // boot screen, credits and coins as on the cabinet
+		else if (a == "--replay-inputs" && i + 1 < argc) replay_path = argv[++i];
 		else if (a == "--aspect" && i + 1 < argc) {
 			std::string v = argv[++i];
 			for (int k = 0; k < N_ASPECTS; k++) if (v == ASPECT_NAMES[k]) arg_aspect = k;
@@ -761,6 +765,16 @@ int main(int argc, char **argv)
 			std::error_code ec;
 			if (!std::filesystem::is_directory(a, ec)) { fprintf(stderr, "%s: no such folder (options start with --)\n", a.c_str()); return 2; }
 			dir = a;
+		}
+	}
+	const bool replay_mode = !replay_path.empty();
+	if (replay_mode) {
+		if (host_game().name != "swa" || getenv("M1_SCRIPT")) {
+			fprintf(stderr, "--replay-inputs is experimental SWA-only and cannot be combined with M1_SCRIPT\n");
+			return 2;
+		}
+		if (const auto error = input_replay::load(replay_path, host_game(), replay); !error.empty()) {
+			fprintf(stderr, "input replay: %s\n", error.c_str()); return 2;
 		}
 	}
 	// Where the game comes from: a regions folder (our own builds, tools/romset.py: build/vf by
@@ -838,6 +852,14 @@ int main(int argc, char **argv)
 	if (arg_aspect >= 0) cfg.aspect = arg_aspect;
 	if (arg_full >= 0) cfg.fullscreen = arg_full;
 	if (arg_arcade) cfg.arcade = true;
+	if (replay_mode) {
+		cfg.arcade = true;
+		cfg.aspect = 1;
+		cfg.scale = 1;
+		cfg.aa = 1;
+		cfg.fps = 30;
+		fprintf(stderr, "input replay: cold boot, arcade 4:3 at 1x; saves isolated; manual handoff after %zu frames\n", replay.frames.size());
+	}
 	g_pc_mode = !cfg.arcade;
 	// the 3D's renderer: M1_3D=cpu|gpu|auto (tests) over the setting
 	if (const char *r = getenv("M1_3D")) cfg.renderer3d = !strcmp(r, "cpu") ? 0 : !strcmp(r, "gpu") ? 1 : 2;
@@ -860,8 +882,10 @@ int main(int argc, char **argv)
 	// the real I/O board's 93C46 and the stand-in's image are laid out differently
 	const std::string nv_path = dir + "/nvram.sav",
 		ee_path = dir + (m.real_ioboard() ? "/eeprom_93c46.sav" : "/eeprom.sav");
-	load_blob(nv_path, m.nvram().data(), m.nvram().size());
-	load_blob(ee_path, m.eeprom(), model1::EEPROM_SIZE);
+	if (!replay_mode) {
+		load_blob(nv_path, m.nvram().data(), m.nvram().size());
+		load_blob(ee_path, m.eeprom(), model1::EEPROM_SIZE);
+	}
 	// the backup as loaded: the autosave in the loop writes it once it differs (free play set at
 	// boot, the game's first settings, an arcade setting changed in the first seconds)
 	auto backup_hash = [&] {
@@ -1602,7 +1626,7 @@ int main(int argc, char **argv)
 		present_shape();
 		show_frame = false;
 	};
-	auto save_settings = [&] { return cfg.save(settings_path, game_part); };
+	auto save_settings = [&] { return replay_mode || cfg.save(settings_path, game_part); };
 	auto set_scale = [&](int v) {
 		// (a new picture size or antialiasing: the GPU's pictures checked against the CPU's again, as at the
 		// start. Low's edge pass on the GPU, chosen after the start's checks, was never checked: on some
@@ -2044,6 +2068,7 @@ int main(int argc, char **argv)
 	bool vsync_now = true;             // (vsync forced off, or not taken: present returns at once, so not every pass)
 	// A game frame's inputs (false: a hotkey opened the menu, no frame runs) and what follows one: the
 	// scene changes' hold, its sound
+	bool replay_manual_first = replay_mode;
 	auto frame_inputs = [&]() -> bool {
 		switch (read_inputs(m, pads, pstate, cfg.ctl, controls, game_part)) {
 		case hotkey::menu: open_menu(); break;
@@ -2052,6 +2077,12 @@ int main(int argc, char **argv)
 		case hotkey::none: break;
 		}
 		if (menu.is_open()) return false;
+		if (replay_manual_first) {
+			fprintf(stderr, "input replay: live controls active at machine frame %llu; buttons=%02x,%02x,%02x pilot=%u,%u throttle=%u gunner=%u,%u\n",
+				(unsigned long long)m.frame_number(), uint8_t(~m.m_inputs[0]), uint8_t(~m.m_inputs[1]), uint8_t(~m.m_inputs[2]),
+				m.m_analog_inputs[0], m.m_analog_inputs[1], m.m_analog_inputs[2], m.m_analog_inputs[4], m.m_analog_inputs[5]);
+			replay_manual_first = false;
+		}
 		game_part.before_frame();
 		return true;
 	};
@@ -2111,6 +2142,53 @@ int main(int argc, char **argv)
 			for (SDL_Scancode s : c.key) if (s == SDL_SCANCODE_F) return false;
 		return true;
 	};
+	if (replay_mode) {
+		auto replay_to_handoff = [&] {
+			SDL_SetWindowTitle(win, "SWA: replaying inputs to manual handoff...");
+			const uint64_t replay_start = SDL_GetTicksNS();
+			m.set_drawing(false);
+			for (size_t i = 0; i < replay.frames.size(); i++) {
+				if (i % 120 == 0) {
+					const std::string title = "SWA: replaying inputs " + std::to_string(i) + "/" +
+						std::to_string(replay.frames.size()) + " (Esc cancels)";
+					SDL_SetWindowTitle(win, title.c_str());
+					SDL_Event event;
+					while (SDL_PollEvent(&event))
+						if (event.type == SDL_EVENT_QUIT ||
+							(event.type == SDL_EVENT_KEY_DOWN && event.key.scancode == SDL_SCANCODE_ESCAPE)) {
+							fprintf(stderr, "input replay: cancelled\n"); return false;
+						}
+				}
+				if (const auto error = input_replay::apply(m, replay.frames[i]); !error.empty()) {
+					fprintf(stderr, "input replay frame %zu: %s\n", i + 1, error.c_str()); return false;
+				}
+				m.run_frame();
+				m.m_audio_out.clear();
+			}
+			const uint64_t actual = input_replay::ram_hash(m);
+			if (actual != replay.expected_ram) {
+				const std::string error = "Input replay diverged before handoff; refusing manual play. Expected RAM hash " +
+					[&] { std::ostringstream s; s << std::hex << replay.expected_ram << ", got " << actual; return s.str(); }();
+				fprintf(stderr, "%s\n", error.c_str());
+				message_box(SDL_MESSAGEBOX_ERROR, host_title(), error);
+				return false;
+			}
+			m.set_drawing(true);
+			m.redraw();
+			m.smooth_cut();
+			sync.reset();
+			paused = true;
+			show_frame = still_dirty = true;
+			for (auto &port : m.m_inputs) port = 0xff;
+			pstate[0] = pstate[1] = pad_state{};
+			resume_clock();
+			SDL_SetWindowTitle(win, "SWA: manual handoff paused - P to play");
+			fprintf(stderr, "input replay: verified %zu frames, RAM hash %016llx in %.1f s; paused for manual control (P to play)\n",
+				replay.frames.size(), (unsigned long long)actual, double(SDL_GetTicksNS() - replay_start) / 1e9);
+			return true;
+		};
+		if (!replay_to_handoff()) return 1;
+	}
 	while (running) {
 		if (!started_at) { started_at = SDL_GetTicksNS(); log_state("the start"); }
 		bool in_texture = false;           // this pass's picture is on the GPU already (or the last one stays)
@@ -2212,7 +2290,10 @@ int main(int argc, char **argv)
 			}
 			else if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
 				if (e.key.scancode == SDL_SCANCODE_ESCAPE) open_menu();
-				else if (e.key.scancode == SDL_SCANCODE_P) paused = !paused;
+				else if (e.key.scancode == SDL_SCANCODE_P) {
+					paused = !paused;
+					if (replay_mode) SDL_SetWindowTitle(win, paused ? "SWA: manual play paused - P to play" : host_title());
+				}
 				else if (e.key.scancode == SDL_SCANCODE_F9) { perf.show = cfg.timings = !perf.show; cfg_dirty = true; if (!perf.show) present_shape(); }
 				else if (e.key.scancode == SDL_SCANCODE_F3) reset_game();
 				else if (e.key.scancode == SDL_SCANCODE_F5) player_scale_to(cfg.scale % 6 + 1);
@@ -2620,7 +2701,7 @@ int main(int argc, char **argv)
 		// The game's backup (rankings, operator settings) saved within a minute of changing, so a
 		// crash, a force quit or the Deck's power button loses at most that (every 3 s before: the
 		// arcade's bookkeeping changes it in play, so it was written that often; and at quit as ever)
-		if (quit_after < 0) {
+		if (quit_after < 0 && !replay_mode) {
 			static uint64_t next_check = SDL_GetTicksNS() + 60000000000ull;
 			if (SDL_GetTicksNS() >= next_check) {
 				next_check = SDL_GetTicksNS() + 60000000000ull;
@@ -2661,7 +2742,7 @@ int main(int argc, char **argv)
 	g3.reset();                          // (its device goes before SDL does)
 	if (gpu_check) fprintf(stderr, "gpu check: %d pictures put together on the GPU checked, %d differ\n", gpu_checked, gpu_differ);
 	gc.release();                          // (its textures go before the renderer)
-	if (quit_after >= 0 && !getenv("M1_SAVE")) { SDL_Quit(); return 0; }   // test runs leave the saves and settings alone (M1_SAVE: they save, as a player's)
+	if (replay_mode || (quit_after >= 0 && !getenv("M1_SAVE"))) { SDL_Quit(); return 0; }   // replay and test runs leave saves and settings alone
 	game_part.keep_arcade_settings();
 	saver.finish();   // (an autosave still being written, done before the last save: the same files)
 	save_blob(nv_path, m.nvram().data(), m.nvram().size());
